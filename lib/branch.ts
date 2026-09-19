@@ -3,13 +3,6 @@ import { execute, now } from "./db";
 import { getDescendantIds } from "./dag";
 import type { Branch, Dependency, Ticket } from "./types";
 
-/**
- * Forks an alternate timeline at `forkTicketId`: copies that ticket and every
- * downstream descendant into a new branch (editable independently of the trunk).
- * Everything upstream of the fork point is shared, unchanged, between branches —
- * see docs/plan.md "Branching Semantics" for why this scoped-subtree copy replaces
- * a general graph fork/merge.
- */
 export async function forkBranch(
   projectId: string,
   fromBranchId: string,
@@ -53,8 +46,6 @@ export async function forkBranch(
   }
 
   for (const edge of internalEdges) {
-    // Parent stays the shared upstream id when it's outside the copied subtree
-    // (i.e. the edge feeding into the fork point itself); otherwise it's remapped.
     const newParentId = idMap.get(edge.PARENT_TICKET_ID) ?? edge.PARENT_TICKET_ID;
     const newChildId = idMap.get(edge.CHILD_TICKET_ID)!;
     await execute(
@@ -71,11 +62,6 @@ export async function forkBranch(
 
 export class MergeConflictError extends Error {}
 
-/**
- * Merges a branch back into its parent branch. Refuses (rather than silently
- * overwriting) if the trunk's copy of the forked subtree changed after the fork —
- * see docs/plan.md Edge Cases: "branch merge attempted after trunk moved".
- */
 export async function mergeBranch(branchId: string): Promise<void> {
   const [branch] = await execute<Branch & { FORKED_AT: string }>(
     `SELECT * FROM branches WHERE id = ?`,
@@ -94,7 +80,6 @@ export async function mergeBranch(branchId: string): Promise<void> {
   const copiedTickets = branchTickets.filter((t) => t.FORKED_FROM_ID);
   const newTickets = branchTickets.filter((t) => !t.FORKED_FROM_ID);
 
-  // Conflict check: none of the originals may have moved since the fork.
   for (const copy of copiedTickets) {
     const originalId = copy.FORKED_FROM_ID!;
     const [original] = await execute<{ UPDATED_AT: string }>(
@@ -108,7 +93,6 @@ export async function mergeBranch(branchId: string): Promise<void> {
     }
   }
 
-  // Apply copied tickets' current values onto their trunk originals.
   for (const copy of copiedTickets) {
     const originalId = copy.FORKED_FROM_ID!;
     await execute(
@@ -120,7 +104,6 @@ export async function mergeBranch(branchId: string): Promise<void> {
     );
   }
 
-  // Brand-new tickets created inside the branch are re-parented into the trunk as-is.
   for (const fresh of newTickets) {
     await execute(`UPDATE tickets SET branch_id = ? WHERE id = ?`, [
       trunkBranchId,
@@ -152,7 +135,6 @@ export async function mergeBranch(branchId: string): Promise<void> {
     }
   }
 
-  // Leftover branch-scoped copies are now superseded by the updated trunk originals.
   await execute(`DELETE FROM dependencies WHERE branch_id = ?`, [branchId]);
   if (copiedTickets.length > 0) {
     await execute(

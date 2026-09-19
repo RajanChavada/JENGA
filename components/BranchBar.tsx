@@ -6,14 +6,14 @@ import type { Branch } from "@/lib/types";
 export function BranchBar({
   branches,
   currentBranchId,
-  onSelectBranch,
-  onMerge,
+  onSelectBranchAction,
+  onMergeAction,
   merging,
 }: {
   branches: Branch[];
   currentBranchId: string | null;
-  onSelectBranch: (id: string) => void;
-  onMerge: () => void;
+  onSelectBranchAction: (id: string) => void;
+  onMergeAction: () => void;
   merging: boolean;
 }) {
   const { role, setRole } = useRole();
@@ -39,7 +39,7 @@ export function BranchBar({
         <select
           className="rounded border px-2 py-1"
           value={currentBranchId ?? ""}
-          onChange={(e) => onSelectBranch(e.target.value)}
+          onChange={(e) => onSelectBranchAction(e.target.value)}
         >
           {branches.map((b) => (
             <option key={b.ID} value={b.ID}>
@@ -53,7 +53,7 @@ export function BranchBar({
         <button
           disabled={merging}
           className="rounded bg-purple-600 px-3 py-1 text-sm text-white disabled:opacity-50"
-          onClick={onMerge}
+          onClick={onMergeAction}
         >
           Merge into trunk
         </button>

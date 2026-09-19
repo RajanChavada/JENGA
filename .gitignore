@@ -41,5 +41,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# snowflake-sdk connection log
-snowflake.log
+# uploaded progress-report PDFs (local-disk storage, see docs/plan.md)
+/public/uploads/*
+!/public/uploads/.gitkeep

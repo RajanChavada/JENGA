@@ -13,24 +13,22 @@ const FLAG_LABEL: Record<string, string> = {
 
 export function TicketPanel({
   ticket,
-  onChanged,
-  onForkRequested,
+  onChangedAction,
+  onForkRequestedAction,
 }: {
   ticket: Ticket | null;
-  onChanged: () => void;
-  onForkRequested: (ticket: Ticket) => void;
+  onChangedAction: () => void;
+  onForkRequestedAction: (ticket: Ticket) => void;
 }) {
   const { role } = useRole();
   const [reports, setReports] = useState<Report[]>([]);
-  const [reportText, setReportText] = useState("");
-  const [mediaUrl, setMediaUrl] = useState("");
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [delayDays, setDelayDays] = useState(3);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     setReports([]);
-    setReportText("");
-    setMediaUrl("");
+    setPdfFile(null);
     if (!ticket) return;
     fetch(`/api/reports?ticketId=${ticket.ID}`)
       .then((r) => r.json())
@@ -53,24 +51,23 @@ export function TicketPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      onChanged();
+      onChangedAction();
     } finally {
       setBusy(false);
     }
   };
 
   const submitReport = async () => {
-    if (!reportText.trim()) return;
+    if (!pdfFile) return;
     setBusy(true);
     try {
-      await fetch("/api/reports", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ticketId: ticket.ID, reportText, mediaUrl: mediaUrl || null }),
-      });
-      setReportText("");
-      setMediaUrl("");
-      onChanged();
+      const body = new FormData();
+      body.append("ticketId", ticket.ID);
+      body.append("pdf", pdfFile);
+      // No Content-Type header — the browser sets the multipart boundary itself.
+      await fetch("/api/reports", { method: "POST", body });
+      setPdfFile(null);
+      onChangedAction();
       const updated = await fetch(`/api/reports?ticketId=${ticket.ID}`).then((r) => r.json());
       setReports(updated);
     } finally {
@@ -86,7 +83,7 @@ export function TicketPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ decision }),
       });
-      onChanged();
+      onChangedAction();
       const updated = await fetch(`/api/reports?ticketId=${ticket.ID}`).then((r) => r.json());
       setReports(updated);
     } finally {
@@ -139,7 +136,7 @@ export function TicketPanel({
             <button
               disabled={busy}
               className="rounded border px-3 py-1 text-sm"
-              onClick={() => onForkRequested(ticket)}
+              onClick={() => onForkRequestedAction(ticket)}
             >
               Fork alternate timeline here
             </button>
@@ -159,21 +156,17 @@ export function TicketPanel({
 
       {role === "contractor" && ticket.STATUS === "in_progress" && (
         <div className="flex flex-col gap-2 border-t pt-3">
-          <textarea
-            className="rounded border p-2 text-sm"
-            rows={3}
-            placeholder="Progress report..."
-            value={reportText}
-            onChange={(e) => setReportText(e.target.value)}
-          />
-          <input
-            className="rounded border p-2 text-sm"
-            placeholder="Photo/video URL (optional)"
-            value={mediaUrl}
-            onChange={(e) => setMediaUrl(e.target.value)}
-          />
+          <label className="text-sm text-zinc-600">
+            Progress report (PDF)
+            <input
+              type="file"
+              accept="application/pdf"
+              className="mt-1 block w-full text-sm"
+              onChange={(e) => setPdfFile(e.target.files?.[0] ?? null)}
+            />
+          </label>
           <button
-            disabled={busy || !reportText.trim()}
+            disabled={busy || !pdfFile}
             className="self-start rounded bg-blue-600 px-3 py-1 text-sm text-white disabled:opacity-50"
             onClick={submitReport}
           >
@@ -183,15 +176,20 @@ export function TicketPanel({
       )}
 
       {role === "owner" && pendingReport && (
-        <div className="flex flex-col gap-2 rounded border border-amber-300 bg-amber-50 p-3 text-sm">
-          <p className="font-medium">Pending report</p>
-          <p>{pendingReport.REPORT_TEXT}</p>
+        <div className="flex flex-col gap-2 rounded border-2 border-amber-400 bg-zinc-900 p-3 text-sm text-zinc-100">
+          <p className="font-medium text-amber-400">Pending report — needs review</p>
+          <p className="whitespace-pre-wrap">{pendingReport.REPORT_TEXT}</p>
           {pendingReport.MEDIA_URL && (
-            <a className="underline" href={pendingReport.MEDIA_URL} target="_blank" rel="noreferrer">
-              View evidence
+            <a
+              className="text-amber-300 underline"
+              href={pendingReport.MEDIA_URL}
+              target="_blank"
+              rel="noreferrer"
+            >
+              View submitted PDF
             </a>
           )}
-          <p className="text-xs text-zinc-600">
+          <p className="text-xs text-zinc-400">
             GPTZero: {FLAG_LABEL[pendingReport.GPTZERO_FLAG ?? "unavailable"]}
             {pendingReport.GPTZERO_SCORE != null &&
               ` (${Math.round(pendingReport.GPTZERO_SCORE * 100)}% AI-generated probability — advisory only, never auto-rejected)`}

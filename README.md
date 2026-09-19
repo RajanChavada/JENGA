@@ -10,16 +10,11 @@ See `docs/plan.md` for the full product/technical plan.
 
 ```bash
 npm install
-cp .env.example .env.local   # fill in Snowflake + GPTZero credentials
+cp .env.example .env.local        # fill in your GPTZero API key
+docker compose up -d              # starts local Postgres
+psql "$DATABASE_URL" -f sql/schema.sql
+npm run seed                      # seeds a demo project — see docs/plan.md → Demo Script
 npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
-
-### Seeding demo data
-
-```bash
-npm run seed
-```
-
-Seeds a single road-construction demo project (see `docs/plan.md` → Demo Script) into Snowflake.

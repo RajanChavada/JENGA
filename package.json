@@ -12,10 +12,10 @@
   "dependencies": {
     "@xyflow/react": "^12.11.6",
     "next": "16.3.5",
+    "pdf-parse": "^2.4.5",
     "pg": "^8.23.0",
     "react": "19.2.8",
-    "react-dom": "19.2.8",
-    "snowflake-sdk": "^3.3.0"
+    "react-dom": "19.2.8"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

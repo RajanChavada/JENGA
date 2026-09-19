@@ -5,13 +5,6 @@ export interface GptZeroResult {
   flag: GptZeroFlag;
 }
 
-/**
- * Calls GPTZero on a report's text. This is a real, visible check (kept for the
- * hackathon's sponsor-track requirement) but is deliberately advisory only — see
- * docs/plan.md: GPTZero's false-positive rate on short, non-native-English text
- * (exactly the shape of a real contractor report) means it must never block
- * submission or approval. Any failure degrades to 'unavailable' rather than throwing.
- */
 export async function checkGptZero(text: string): Promise<GptZeroResult> {
   const apiKey = process.env.GPTZERO_API_KEY;
   if (!apiKey) return { score: null, flag: "unavailable" };

@@ -1,7 +1,6 @@
 import { execute, dateAddDays, now } from "./db";
 import type { Ticket, TicketStatus } from "./types";
 
-/** All ticket ids reachable downstream of `ticketId` within `branchId` (exclusive of itself). */
 export async function getDescendantIds(
   branchId: string,
   ticketId: string
@@ -23,7 +22,6 @@ export async function getDescendantIds(
   return rows.map((r) => r.TICKET_ID);
 }
 
-/** True if adding parent -> child would create a cycle (child already reaches parent). */
 export async function wouldCreateCycle(
   branchId: string,
   parentTicketId: string,
@@ -34,7 +32,6 @@ export async function wouldCreateCycle(
   return descendantsOfChild.includes(parentTicketId);
 }
 
-/** Direct parent ticket ids of `ticketId` within `branchId`. */
 async function getParentIds(
   branchId: string,
   ticketId: string
@@ -54,10 +51,6 @@ async function getTicket(ticketId: string): Promise<Ticket> {
   return rows[0];
 }
 
-/**
- * AND-join unblock: for each direct child of `ticketId`, promote it from
- * 'blocked' to 'ready' once every one of its parents is 'done'.
- */
 async function unblockReadyChildren(
   branchId: string,
   ticketId: string
@@ -81,12 +74,6 @@ async function unblockReadyChildren(
   }
 }
 
-/**
- * Cascades a status change out from `ticketId`:
- * - 'done'      -> unblocks direct children whose other parents are also done (AND-join).
- * - 'cancelled' -> every downstream descendant flips to 'blocked' (surfaced in the UI as a
- *                  prompt to fork a branch from this point, per docs/plan.md Edge Cases).
- */
 export async function recalcAfterStatusChange(
   branchId: string,
   ticketId: string,
@@ -106,7 +93,6 @@ export async function recalcAfterStatusChange(
   }
 }
 
-/** Shifts planned_start/planned_end forward (or back) by `deltaDays` for every downstream descendant. */
 export async function shiftDownstreamDates(
   branchId: string,
   ticketId: string,

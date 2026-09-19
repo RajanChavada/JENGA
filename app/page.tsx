@@ -110,8 +110,8 @@ export default function Home() {
       <BranchBar
         branches={branches}
         currentBranchId={currentBranchId}
-        onSelectBranch={setCurrentBranchId}
-        onMerge={handleMerge}
+        onSelectBranchAction={setCurrentBranchId}
+        onMergeAction={handleMerge}
         merging={merging}
       />
 
@@ -121,19 +121,17 @@ export default function Home() {
         </p>
       )}
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[2fr_1fr]">
-        <DagView
-          tickets={tickets}
-          dependencies={dependencies}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
-        />
-        <TicketPanel
-          ticket={selectedTicket}
-          onChanged={loadGraph}
-          onForkRequested={handleFork}
-        />
-      </div>
+      <DagView
+        tickets={tickets}
+        dependencies={dependencies}
+        selectedId={selectedId}
+        onSelectAction={setSelectedId}
+      />
+      <TicketPanel
+        ticket={selectedTicket}
+        onChangedAction={loadGraph}
+        onForkRequestedAction={handleFork}
+      />
     </main>
   );
 }
