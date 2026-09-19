@@ -133,6 +133,11 @@ def _extract(content: str, source_url: str) -> list[dict]:
         if not match:
             continue
         summary = match.group(1).strip()
+        # Pages embed JSON blobs in script tags that survive the tag-strip; a
+        # station name inside one produces a "summary" of raw keys and braces.
+        # A pin with junk provenance is worse than no pin — skip it.
+        if re.search(r'"\w+"\s*:|[{}\[\]]', summary):
+            continue
         found.append(
             {
                 "id": re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-"),
