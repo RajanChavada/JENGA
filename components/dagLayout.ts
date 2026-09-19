@@ -27,6 +27,7 @@ function computePxPerDay(totalDays: number): number {
 export interface TimelineLayout {
   positions: Map<string, { x: number; y: number }>;
   widths: Map<string, number>;
+  delayWidths: Map<string, number>;
   minDate: Date;
   maxDate: Date;
   laneCount: number;
@@ -38,7 +39,16 @@ export function layoutTimeline(tickets: Ticket[]): TimelineLayout {
   const withDates = tickets.map((t) => {
     const start = parseDate(t.PLANNED_START) ?? today;
     const end = parseDate(t.PLANNED_END) ?? start;
-    return { ticket: t, start, end: end < start ? start : end };
+    const clampedEnd = end < start ? start : end;
+    const original = parseDate(t.ORIGINAL_PLANNED_END);
+    const originalEnd = original
+      ? original < start
+        ? start
+        : original > clampedEnd
+          ? clampedEnd
+          : original
+      : clampedEnd;
+    return { ticket: t, start, end: clampedEnd, originalEnd };
   });
 
   const minDate =
@@ -57,8 +67,9 @@ export function layoutTimeline(tickets: Ticket[]): TimelineLayout {
   const laneEnds: Date[] = [];
   const positions = new Map<string, { x: number; y: number }>();
   const widths = new Map<string, number>();
+  const delayWidths = new Map<string, number>();
 
-  for (const { ticket, start, end } of sorted) {
+  for (const { ticket, start, end, originalEnd } of sorted) {
     let lane = laneEnds.findIndex((laneEnd) => laneEnd <= start);
     if (lane === -1) {
       lane = laneEnds.length;
@@ -67,9 +78,13 @@ export function layoutTimeline(tickets: Ticket[]): TimelineLayout {
       laneEnds[lane] = end;
     }
 
+    const totalWidth = Math.max(MIN_BAR_WIDTH, diffDays(end, start) * pxPerDay);
+    const delayWidth = Math.min(totalWidth, Math.max(0, diffDays(end, originalEnd)) * pxPerDay);
+
     positions.set(ticket.ID, { x: diffDays(start, minDate) * pxPerDay, y: lane * ROW_HEIGHT });
-    widths.set(ticket.ID, Math.max(MIN_BAR_WIDTH, diffDays(end, start) * pxPerDay));
+    widths.set(ticket.ID, totalWidth);
+    delayWidths.set(ticket.ID, delayWidth);
   }
 
-  return { positions, widths, minDate, maxDate, laneCount: laneEnds.length, pxPerDay };
+  return { positions, widths, delayWidths, minDate, maxDate, laneCount: laneEnds.length, pxPerDay };
 }

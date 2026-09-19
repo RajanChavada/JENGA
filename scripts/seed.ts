@@ -1,5 +1,4 @@
 import { config } from "dotenv";
-// Next.js loads .env.local itself; this script runs standalone, so load it explicitly.
 config({ path: ".env.local" });
 
 import { randomUUID } from "crypto";
@@ -27,13 +26,15 @@ async function createTicket(
   description: string,
   status: string,
   plannedStart: string,
-  plannedEnd: string
+  plannedEnd: string,
+  originalPlannedEnd: string = plannedEnd
 ): Promise<string> {
   const id = randomUUID();
   await execute(
-    `INSERT INTO tickets (id, project_id, branch_id, title, description, status, planned_start, planned_end)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, projectId, branchId, title, description, status, plannedStart, plannedEnd]
+    `INSERT INTO tickets
+       (id, project_id, branch_id, title, description, status, planned_start, planned_end, original_planned_end)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, projectId, branchId, title, description, status, plannedStart, plannedEnd, originalPlannedEnd]
   );
   return id;
 }
@@ -45,7 +46,6 @@ async function createDependency(branchId: string, parentId: string, childId: str
   );
 }
 
-/** Seeds an approved, closed-out report on a `done` ticket — history, not a live GPTZero call. */
 async function createApprovedReport(
   ticketId: string,
   reportText: string,
@@ -61,10 +61,6 @@ async function createApprovedReport(
   );
 }
 
-/**
- * Original demo scenario (docs/plan.md → Demo Script): a road-resurfacing job
- * with fan-in/fan-out for AND-join and branching demos.
- */
 async function seedRoute12() {
   const projectId = await createProject("Route 12 Resurfacing");
   const trunkBranchId = await createTrunkBranch(projectId);
@@ -117,7 +113,6 @@ async function seedRoute12() {
   await createDependency(trunkBranchId, segmentA, painting);
   await createDependency(trunkBranchId, segmentB, painting);
 
-  // Everything with an unmet dependency starts blocked; only the two roots stay ready.
   await execute(`UPDATE tickets SET status = 'blocked' WHERE id IN (?, ?, ?, ?)`, [
     grading,
     segmentA,
@@ -128,23 +123,18 @@ async function seedRoute12() {
   console.log(`Seeded project ${projectId} (Route 12 Resurfacing) on trunk branch ${trunkBranchId}`);
 }
 
-/**
- * Real-world demo scenario: Toronto's Line 5 Eglinton Crosstown LRT — see
- * docs/plan.md "Real Demo Dataset" for the research this is grounded in.
- * Dates and dependency structure reflect the real, publicly-reported project
- * history. All tickets except the last are seeded `done` with an approved
- * report attached (3 link real Metrolinx/Auditor-General PDFs; the rest link
- * synthetic one-pagers from scripts/generate-eglinton-pdfs.ts, grounded in the
- * same real facts). The last ticket is left `in_progress` with no report, for
- * a live PDF-upload demo through the real pipeline.
- */
 async function seedEglintonCrosstown() {
   const projectId = await createProject("Line 5 Eglinton Crosstown LRT");
   const trunkBranchId = await createTrunkBranch(projectId);
   const REF = "/reference-docs/eglinton";
 
-  const done = (title: string, description: string, start: string, end: string) =>
-    createTicket(projectId, trunkBranchId, title, description, "done", start, end);
+  const done = (
+    title: string,
+    description: string,
+    start: string,
+    end: string,
+    originalEnd?: string
+  ) => createTicket(projectId, trunkBranchId, title, description, "done", start, end, originalEnd);
 
   const utilityRelocation = await done(
     "Utility Relocation & Early Works",
@@ -192,7 +182,10 @@ async function seedEglintonCrosstown() {
     "Systems Installation (Power, Signaling, Communications)",
     "Overhead/third-rail power, signaling, and communications systems installed and commissioned section by section.",
     "2020-01-01",
-    "2022-06-30"
+    "2022-06-30",
+    // Originally implied lead time ahead of the contracted Sept 2021 target —
+    // testing/commissioning fell behind schedule per the research (see docs/plan.md).
+    "2021-06-30"
   );
   const vehicleTesting = await done(
     "Vehicle Testing — Static & Dynamic",
@@ -228,10 +221,13 @@ async function seedEglintonCrosstown() {
     projectId,
     trunkBranchId,
     "Revenue Service Launch Prep",
-    "Final TTC operational readiness and launch preparation ahead of public revenue service (actual opening: February 8, 2026).",
+    "Final TTC operational readiness and launch preparation ahead of public revenue service. Originally contracted to open September 2021 — actual opening February 8, 2026.",
     "in_progress",
     "2025-07-01",
-    "2026-02-08"
+    "2026-02-08",
+    // The contracted target from the 2015 CTS agreement — the headline ~4.4-year
+    // delay against the real opening. See docs/plan.md "Delay Visualization".
+    "2021-09-01"
   );
 
   await createDependency(trunkBranchId, utilityRelocation, tunnelBoring);
@@ -250,8 +246,6 @@ async function seedEglintonCrosstown() {
   await createDependency(trunkBranchId, integrationTesting, substantialCompletion);
   await createDependency(trunkBranchId, substantialCompletion, launchPrep);
 
-  // Real, external, verified-working (HTTP 200, application/pdf) source documents —
-  // linked directly rather than re-hosted. See docs/plan.md for the URLs' provenance.
   await createApprovedReport(
     scheduleSettlement2018,
     "Following schedule pressure on the Eglinton Crosstown program, Metrolinx and Crosslinx Transit Solutions (CTS) reached a settlement in 2018 intended to protect the September 2021 revenue service target. The Auditor General of Ontario's 2018 Annual Report (Section 3.07, \"Metrolinx — LRT Construction and Infrastructure Planning\") reviewed the arrangement, including a $237 million payment made to CTS, and raised concerns about contract oversight and how the payment was assessed.",
@@ -271,7 +265,6 @@ async function seedEglintonCrosstown() {
     0.06
   );
 
-  // Synthetic one-pagers (scripts/generate-eglinton-pdfs.ts), text matches the PDFs exactly.
   await createApprovedReport(
     utilityRelocation,
     "Early works and utility relocation along the Eglinton Avenue corridor are underway, clearing the way for tunnel boring and surface construction to follow.\n\nMunicipal and private utilities (water, gas, telecom, hydro) are being identified and relocated in advance of the tunnel boring launch shaft and surface guideway excavation.\n\nThis phase follows the November 2011 announcement targeting a 2020 revenue service opening for the Eglinton Crosstown LRT.",

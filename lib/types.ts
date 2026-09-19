@@ -17,6 +17,7 @@ export interface Ticket {
   STATUS: TicketStatus;
   PLANNED_START: string | null;
   PLANNED_END: string | null;
+  ORIGINAL_PLANNED_END: string | null;
   ACTUAL_START: string | null;
   ACTUAL_END: string | null;
   UPDATED_AT: string;

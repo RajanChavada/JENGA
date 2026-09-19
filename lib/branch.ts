@@ -37,9 +37,9 @@ export async function forkBranch(
     await execute(
       `INSERT INTO tickets
          (id, project_id, branch_id, forked_from_id, title, description, status,
-          planned_start, planned_end, actual_start, actual_end)
+          planned_start, planned_end, original_planned_end, actual_start, actual_end)
        SELECT ?, project_id, ?, id, title, description, status,
-              planned_start, planned_end, actual_start, actual_end
+              planned_start, planned_end, original_planned_end, actual_start, actual_end
        FROM tickets WHERE id = ?`,
       [idMap.get(original.ID)!, newBranchId, original.ID]
     );

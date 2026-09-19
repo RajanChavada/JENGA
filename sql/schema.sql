@@ -30,11 +30,14 @@ CREATE TABLE IF NOT EXISTS tickets (
   status TEXT NOT NULL DEFAULT 'blocked',
   planned_start DATE,
   planned_end DATE,
+  original_planned_end DATE,
   actual_start DATE,
   actual_end DATE,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS original_planned_end DATE;
 
 CREATE TABLE IF NOT EXISTS dependencies (
   id TEXT PRIMARY KEY,

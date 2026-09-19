@@ -13,12 +13,20 @@ export async function POST(req: NextRequest) {
   }
 
   const id = randomUUID();
-  // No dependencies exist yet at creation time, so nothing blocks this ticket until
-  // a dependency is added (see app/api/dependencies/route.ts, which re-blocks it then).
   await execute(
-    `INSERT INTO tickets (id, project_id, branch_id, title, description, status, planned_start, planned_end)
-     VALUES (?, ?, ?, ?, ?, 'ready', ?, ?)`,
-    [id, projectId, branchId, title, description ?? null, plannedStart ?? null, plannedEnd ?? null]
+    `INSERT INTO tickets
+       (id, project_id, branch_id, title, description, status, planned_start, planned_end, original_planned_end)
+     VALUES (?, ?, ?, ?, ?, 'ready', ?, ?, ?)`,
+    [
+      id,
+      projectId,
+      branchId,
+      title,
+      description ?? null,
+      plannedStart ?? null,
+      plannedEnd ?? null,
+      plannedEnd ?? null,
+    ]
   );
 
   return NextResponse.json({ id }, { status: 201 });

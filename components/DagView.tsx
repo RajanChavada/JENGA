@@ -144,9 +144,11 @@ function buildNode(
   x: number,
   y: number,
   width: number,
+  delayWidth: number,
   selected: boolean,
   measured: Node["measured"]
 ): Node {
+  const normalWidth = width - delayWidth;
   return {
     id: t.ID,
     position: { x, y },
@@ -162,10 +164,25 @@ function buildNode(
           <span className="whitespace-nowrap text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
             {t.TITLE}
           </span>
-          <div
-            className="rounded"
-            style={{ width, height: BAR_HEIGHT, background: STATUS_COLOR[t.STATUS] }}
-          />
+          <div className="flex" style={{ width, height: BAR_HEIGHT }}>
+            <div
+              className="rounded-l"
+              style={{
+                width: normalWidth,
+                height: BAR_HEIGHT,
+                background: STATUS_COLOR[t.STATUS],
+                borderTopRightRadius: delayWidth > 0 ? 0 : undefined,
+                borderBottomRightRadius: delayWidth > 0 ? 0 : undefined,
+              }}
+            />
+            {delayWidth > 0 && (
+              <div
+                className="rounded-r"
+                title="Delayed beyond the originally planned end date"
+                style={{ width: delayWidth, height: BAR_HEIGHT, background: "#dc2626" }}
+              />
+            )}
+          </div>
         </div>
       ),
     },
@@ -205,11 +222,13 @@ export function DagView({
         const existing = prevById.get(t.ID);
         const base = layout.positions.get(t.ID) ?? { x: 0, y: 0 };
         const width = layout.widths.get(t.ID) ?? MIN_BAR_WIDTH;
+        const delayWidth = layout.delayWidths.get(t.ID) ?? 0;
         return buildNode(
           t,
           base.x,
           existing?.position.y ?? base.y,
           width,
+          delayWidth,
           selectedId === t.ID,
           existing?.measured
         );

@@ -102,6 +102,23 @@ export function TicketPanel({
           Status: <span className="font-medium">{ticket.STATUS}</span> · Planned{" "}
           {ticket.PLANNED_START} → {ticket.PLANNED_END}
         </p>
+        {ticket.ORIGINAL_PLANNED_END &&
+          ticket.PLANNED_END &&
+          ticket.ORIGINAL_PLANNED_END !== ticket.PLANNED_END &&
+          (() => {
+            const days = Math.round(
+              (new Date(ticket.PLANNED_END).getTime() -
+                new Date(ticket.ORIGINAL_PLANNED_END).getTime()) /
+                86_400_000
+            );
+            if (days <= 0) return null;
+            return (
+              <p className="mt-1 text-xs font-medium text-red-600">
+                Delayed from {ticket.ORIGINAL_PLANNED_END} — now {ticket.PLANNED_END} ({days}{" "}
+                day{days === 1 ? "" : "s"} late)
+              </p>
+            );
+          })()}
       </div>
 
       {role === "owner" && (

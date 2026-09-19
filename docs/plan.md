@@ -41,7 +41,7 @@ This plan is scoped for a fixed, short hackathon build window: pick the wedge th
 
 Single schema (`sql/schema.sql`), four core tables:
 
-- `tickets(id, project_id, branch_id, title, description, status, planned_start, planned_end, actual_start, actual_end, created_at)`
+- `tickets(id, project_id, branch_id, title, description, status, planned_start, planned_end, original_planned_end, actual_start, actual_end, created_at)` — `original_planned_end` is set once at creation and never touched again by delays/ripples/merges; see "DAG View: Timeline Layout" for what it's for.
 - `dependencies(id, branch_id, parent_ticket_id, child_ticket_id)` — the DAG edges, scoped per branch.
 - `branches(id, project_id, name, forked_from_branch_id, forked_from_ticket_id, forked_at, status)` — `status` is `active` or `merged`; the trunk is the branch with `forked_from_branch_id IS NULL`.
 - `reports(id, ticket_id, submitted_by_role, text, media_url, gptzero_score, gptzero_flag, owner_decision, decided_at)`
@@ -88,6 +88,8 @@ Dragging a node is visual-only: it repositions a ticket's lane to untangle overl
 Selecting a ticket opens `TicketPanel` docked full-width below the graph (not a popup/modal) — avoids overlay/z-index/click-outside handling and keeps the graph visible while reading ticket details.
 
 **Scale is adaptive, not fixed** (`computePxPerDay` in `dagLayout.ts`): a constant 40px/day works for Route 12's ~2-week span but renders a multi-year project (the seeded Eglinton Crosstown LRT spans 2011–2026) hundreds of thousands of pixels wide — found by actually loading it, not by inspection. The date ruler's tick granularity (week/month/year) scales with the same span for the same reason. React Flow's `fitView` also only auto-fits once on mount, so switching projects needs `<DagView key={projectId}>` in `app/page.tsx` to force a remount (otherwise the view keeps the previous project's stale zoom/pan), and `minZoom` is set well below React Flow's default `0.5` so a long project's full range can actually fit in frame.
+
+**Delay visualization**: each bar is two adjacent segments, not one — status-colored from `planned_start` to `original_planned_end`, then red from there to the current `planned_end` (zero-width, i.e. invisible, when a ticket hasn't slipped). Because delay ripples (`lib/dag.ts`'s `shiftDownstreamDates`) only ever move `planned_start`/`planned_end`, never the baseline `original_planned_end`, a delay on one ticket automatically grows a red tail on every downstream ticket it pushes too — no special-casing needed. `TicketPanel` shows the same gap as exact text ("Delayed from X — now Y (N days late)"). Seeded on the real Eglinton data on two tickets with a documented original-vs-actual slip (`scripts/seed.ts`): "Revenue Service Launch Prep" (contracted Sept 2021 vs. actual Feb 2026 — the headline ~4.4-year delay) and "Systems Installation" (a smaller, separately-documented slip) — not on all 14, since most don't have a distinctly-documented sub-milestone target separate from the single real date already seeded.
 
 ## Edge Cases Handled in MVP
 
