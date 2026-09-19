@@ -174,7 +174,10 @@ async def main() -> None:
     tiger._regime_since[TICKET] = now - timedelta(seconds=24)
     await drive(12, now)  # 12 cold ticks since the snap
     clamped = await tiger.curing_status(TICKET)
-    assert clamped["window_s"] == 24, clamped
+    # A range, not 24 exactly: the floor is measured against the real clock and
+    # rounds up, so a few milliseconds of test execution move it by one second.
+    # The claim being pinned is "clamped to ~24 s", not "clamped to 120 s".
+    assert 24 <= clamped["window_s"] <= 26, clamped
     assert clamped["window_requested_s"] == 120, clamped
     assert clamped["samples"] == 12, clamped
     assert clamped["below_threshold"] is True, clamped
@@ -214,6 +217,59 @@ async def main() -> None:
           f"verdict {held['verdict']['status']} via {held['branch']}")
     print(f"      card:   {thin['detail']}")
 
+    # 8 — a dispute some *other* rule raised on a cold ticket is not a sensor
+    # dispute. Every active ticket streams telemetry and a cold-snapped one stays
+    # cold, so "DISPUTED and below_threshold" is not a usable stand-in for "rule 0
+    # fired": here the photograph contradicts a claim with no cure/pour/set word
+    # in it, so rule 0 cannot fire, and neither the route gate nor card 5 may
+    # treat the result as telemetry's doing.
+    brackets = {
+        "task": TASKS[TICKET],
+        "claim": "Handrail brackets installed along the platform edge, 1.2 m centres.",
+        "gptzero": {"ai_probability": 0.93, "flagged": True},
+        "vision": {
+            "observation": "The platform edge is bare; no brackets are visible.",
+            "matches_claim": False,
+            "confidence": 0.8,
+            "insufficient": False,
+        },
+        "historical": {"summary": "Two comparable fit-out packages closed on schedule."},
+        "sensor": read["sensor"],  # still below threshold from case 2
+    }
+    assert brackets["sensor"]["below_threshold"] is True, brackets["sensor"]
+    # Lenient, so the AI gate stands aside and the contradiction rule is reached
+    # with a flagged score — the shape that makes it to the route gate.
+    other = await _decide({**brackets, "strict": False})
+    assert other["branch"] == "contradiction", other["branch"]
+    assert other["verdict"]["status"] == "DISPUTED", other["verdict"]["status"]
+    assert other["verdict"]["branch"] == "contradiction", other["verdict"]["branch"]
+    assert other["verdict"]["actionable_request"] is None, other["verdict"]["actionable_request"]
+    assert "Contractor reports the pour as cured" not in other["verdict"]["reasoning"], \
+        other["verdict"]["reasoning"]
+    traced = {**brackets, "strict": False, **other}
+    arb = next(c for c in _build_trace(traced) if c["node"] == "arbiter")
+    assert "Telemetry" not in arb["detail"], arb
+    assert arb["detail"] == "Sources conflict, evidence legible — disputed.", arb
+    # Card 4 still reports the cold reading — that part is true and stays red.
+    cold_card = telemetry_card(traced)
+    assert cold_card["signal"] == "bad", cold_card
+    print(f"PASS  contradiction dispute on a cold ticket -> branch {other['branch']}, "
+          f"card 5 credits the photo not the sensor")
+
+    async def stub_other(task, report_text=None, image_base64=None, transcript=None, strict=True):
+        return dict(other["verdict"], task_id=task["id"])
+
+    main.verify_submission = stub_other
+    await reset_sim()  # case 5's verify left the ticket disputed
+    gated = await main.verify(
+        TICKET, VerifyRequest(report_text=brackets["claim"]), strict=True
+    )
+    assert gated["status"] == "UNDER_REVIEW", gated["status"]
+    assert gated["confidence"] <= 0.49, gated["confidence"]
+    assert "X:" in (gated["actionable_request"] or ""), gated["actionable_request"]
+    print(f"PASS  route gate still applies to it -> {gated['status']} "
+          f"(only branch sensor_conflict is exempt)")
+
     # Re-posting a mode is not a regime change and must not restart the window.
     await reset_sim()
     sensors.set_scenario(TICKET, "cold")
@@ -224,7 +280,7 @@ async def main() -> None:
     assert tiger.effective_window("P-999", 120) == 120
 
     print("=" * 62)
-    print("All checks passed (7 cases).")
+    print("All checks passed (8 cases).")
 
 
 if __name__ == "__main__":

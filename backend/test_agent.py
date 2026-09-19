@@ -1,9 +1,17 @@
 """Plain-assert checks for the JENGA verification pipeline.
 
-    cd backend && JENGA_OFFLINE=1 python test_agent.py
+    cd backend && python test_agent.py
 
 No pytest. Every submission in data/mock_evidence.json is run through the real
 graph and its verdict status is checked against the `expected` block.
+
+This suite makes no network calls and reaches no shared database, and it enforces
+that itself rather than trusting the command line. `JENGA_OFFLINE=1` keeps every
+integration on its canned fallback and `JENGA_SENSORS=0` keeps `sensor_check` on
+the mock store instead of dialling Tiger Cloud; both are `setdefault`s, so
+`JENGA_OFFLINE=0 python test_agent.py` still exercises the live paths
+deliberately. `JENGA_STORAGE` is set outright further down, where the route-level
+checks begin. The mock-mode guarantee is asserted, not just configured.
 """
 
 from __future__ import annotations
@@ -16,9 +24,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# Before the first `integrations` import, and therefore before its load_dotenv():
+# a .env that sets JENGA_OFFLINE=0 must not silently make this suite hit the
+# network. load_dotenv() never overrides an already-set variable, so these win.
+os.environ.setdefault("JENGA_SENSORS", "0")
+os.environ.setdefault("JENGA_OFFLINE", "1")
+
 import agent  # noqa: E402
 from agent import _decide, detect_material_shortage, verify_submission  # noqa: E402
-from integrations import DATA_DIR, OFFLINE  # noqa: E402
+from integrations import DATA_DIR, OFFLINE, tiger  # noqa: E402
 from integrations.gptzero import FLAG_THRESHOLD  # noqa: E402
 from integrations.zip_api import PURCHASE_ORDERS, update_purchase_order  # noqa: E402
 
@@ -35,7 +49,12 @@ STUB_IMAGE = (
 
 async def main() -> None:
     failures: list[str] = []
-    print(f"JENGA agent checks (offline={OFFLINE})\n" + "=" * 62)
+    # The network guarantee, asserted rather than assumed: mock mode means
+    # sensor_check reads the in-process deque and opens no connection.
+    assert tiger.source() == "mock", (
+        f"telemetry is {tiger.source()!r}; this suite must not reach Tiger Cloud"
+    )
+    print(f"JENGA agent checks (offline={OFFLINE}, telemetry={tiger.source()})\n" + "=" * 62)
 
     for sub in EVIDENCE["submissions"]:
         task = TASKS[sub["task_id"]]

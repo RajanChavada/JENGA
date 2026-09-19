@@ -11,6 +11,7 @@ carries host and user from the DSN.
 
 from __future__ import annotations
 
+import math
 import os
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
@@ -72,12 +73,18 @@ def effective_window(ticket_id: str, window_s: int) -> int:
     `window_s` once the current regime has been running that long — so a pour
     that was cold from the start reads as a full window of cold, not as a
     handful of samples.
+
+    Rounded up, not truncated. Truncating drops any reading taken in the
+    fractional second after the regime changed, which shows up as the card
+    flickering to "no telemetry" during the ten seconds the audience is watching
+    the sparkline. Rounding up can instead reach under a second past the change,
+    which is at most one reading at the 2 s tick — the cheaper error.
     """
     since = _regime_since.get(ticket_id)
     if since is None:
         return window_s
     elapsed = (datetime.now(timezone.utc) - since).total_seconds()
-    return max(1, min(window_s, int(elapsed)))
+    return max(1, min(window_s, math.ceil(elapsed)))
 
 
 def _go_mock(exc: Exception) -> None:
@@ -97,6 +104,18 @@ async def _get_pool():
             TIGER_SERVICE_URL, min_size=1, max_size=3, command_timeout=5
         )
     return _pool
+
+
+async def close() -> None:
+    """Release the pool. Called from the FastAPI lifespan, after the simulator stops."""
+    global _pool
+    if _pool is None:
+        return
+    pool, _pool = _pool, None
+    try:
+        await pool.close()
+    except Exception as exc:
+        emit("warning", "tiger: pool close failed", error=type(exc).__name__)
 
 
 async def insert_readings(rows: list[tuple[datetime, str, str, float]]) -> None:

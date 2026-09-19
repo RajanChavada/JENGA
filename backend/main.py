@@ -127,7 +127,9 @@ async def lifespan(_app):
     try:
         yield
     finally:
+        # Simulator first: the pool must outlive the last insert in flight.
         await sensors.stop(sensor_task)
+        await tiger.close()
 
 
 app = FastAPI(title="JENGA", lifespan=lifespan)
@@ -237,9 +239,12 @@ async def verify(task_id: str, body: VerifyRequest, strict: bool = True):
     # own thermometer raised. A measurement outranks an authorship heuristic, and
     # the whole point of putting the sensor rule first is lost if the route
     # quietly puts the gate back in front of it.
-    sensor_disputed = verdict["status"] == "DISPUTED" and bool(
-        (verdict.get("sensor") or {}).get("below_threshold")
-    )
+    #
+    # Keyed on the deciding rule, not on (DISPUTED and cold). Every active ticket
+    # streams telemetry, so a cold-snapped one would otherwise exempt a dispute
+    # that rule 0 played no part in — a contradicted photograph, say, on a claim
+    # with no cure/pour/set word in it. The exemption belongs to rule 0 alone.
+    sensor_disputed = verdict.get("branch") == "sensor_conflict"
     if strict and flagged and not sensor_disputed:
         verdict["status"] = "UNDER_REVIEW"
         gz["flagged"] = True

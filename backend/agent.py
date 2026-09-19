@@ -82,7 +82,15 @@ def _threshold_label(sensor: dict) -> str:
 
 
 def _sensor_card(sensor: dict) -> tuple[str, str]:
-    """(detail, signal) for the site-telemetry trace card."""
+    """(detail, signal) for the site-telemetry trace card.
+
+    Re-derives `samples < min_samples` rather than reading it off the status,
+    because `below_threshold` alone cannot separate "too sparse to judge" from
+    "warm enough" — the producer folds both into `False`. That makes this a
+    second reader of `curing_status`'s invariant: a hand-built payload, or one
+    persisted before the floor existed, can render "too sparse" here while
+    carrying a `below_threshold` that disputed the verdict.
+    """
     avg = sensor.get("avg_temp_c")
     samples = int(sensor.get("samples") or 0)
     if not samples or avg is None:
@@ -115,7 +123,7 @@ def _sensor_sentence(sensor: dict) -> str:
     """
     return (
         f"Contractor reports the pour as cured; site sensors show an average of "
-        f"{float(sensor['avg_temp_c']):.1f} °C over the last "
+        f"{float(sensor.get('avg_temp_c') or 0.0):.1f} °C over the last "
         f"{_window_label(int(sensor.get('window_s') or 0))} against a "
         f"{_threshold_label(sensor)} °C minimum. Claim and telemetry conflict."
     )
@@ -390,6 +398,12 @@ async def _decide(state: VerifyState) -> dict:
         "branch": branch,
         "verdict": {
             "task_id": task_id,
+            # Also on the verdict, not just the graph state: `main.verify` and the
+            # trace both need to know *which rule decided*, and inferring it from
+            # (status, sensor.below_threshold) misreads any other rule's dispute on
+            # a ticket that happens to be cold. `schemas.Verdict` drops the key, so
+            # it stays an internal fact rather than part of the API.
+            "branch": branch,
             "status": status,
             "confidence": round(max(0.0, min(1.0, confidence)), 2),
             "reasoning": reasoning,
@@ -490,9 +504,11 @@ def _build_trace(state: VerifyState) -> list[dict]:
             "title": "5 · Arbiter",
             # A sensor dispute needs its own line: the generic one credits legible
             # photographic evidence, and rule 0 fires on the thermometer whether a
-            # photograph was submitted or not.
+            # photograph was submitted or not. Keyed on the branch that actually
+            # decided — a cold ticket whose dispute came from the photograph is
+            # not a telemetry dispute, and this card must not say it was.
             "detail": "Telemetry contradicts the written claim — disputed."
-            if status == "DISPUTED" and sensor.get("below_threshold")
+            if state.get("branch") == "sensor_conflict"
             else {
                 "APPROVED": "Sources agree — approved.",
                 "DISPUTED": "Sources conflict, evidence legible — disputed.",
