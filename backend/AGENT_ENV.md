@@ -112,14 +112,17 @@ Live integration with the **Zip Procurement API**, defaulting to the HTN
 **staging** environment (`https://staging-api.zip.com`).
 
 When a material shortage is detected in a field report, `verify` calls
-`zip_api.expedite_purchase_order()`, which brings the affected PO's delivery
-date forward via the same `zip_update_purchase_order` operation the official
-`ziphq-mcp` package exposes:
+`zip_api.expedite_purchase_order()`. POs on the staging tenant are immutable
+via the API (`Allow: GET, HEAD, OPTIONS`), so the expedite raises a **new** PO
+carrying the local PO number, material and pulled-in date — a real object you
+can open in the tenant's Zip UI. Payloads are `{"data": ...}`-wrapped and
+collections come back as `{"list": [...]}`:
 
 ```
-PATCH https://staging-api.zip.com/purchase_orders/<PO_ID>
+POST https://staging-api.zip.com/purchase_orders
 Zip-Api-Key: <ZIP_API_KEY>
-{"need_by_date": "<date>", "delivery_date": "<date>", "memo": "<reason>"}
+{"data": {"currency": "CAD", "vendor_id": "<resolved live>",
+          "description": "EXPEDITE <PO> — <material> — need by <date>. <reason>"}}
 ```
 
 - **Get a key:** ping `#spons-zip-2026` for a domain, then create a standard API

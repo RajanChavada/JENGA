@@ -5,11 +5,14 @@ decides whether a purchase order needs expediting.
 
 `expedite_purchase_order` is the live integration: when `ZIP_API_KEY` is set it
 calls the real Zip Procurement API (staging base `https://staging-api.zip.com`,
-`Zip-Api-Key` header) and PATCHes the affected purchase order to bring its
-delivery date forward — the same `zip_update_purchase_order` operation the
-official `ziphq-mcp` package exposes. Without a key — or if the call fails or
-times out — it degrades to the in-memory mock, matching JENGA's
-one-fallback-per-integration rule so the demo never breaks.
+`Zip-Api-Key` header). Purchase orders on the staging tenant are read-only once
+created (`Allow: GET, HEAD, OPTIONS` — changes flow through intake workflows),
+so an expedite POSTs a *new* PO whose description carries the local PO number,
+the material and the pulled-in date. That PO is visible in the tenant's Zip UI,
+which is the point: a real artifact, not a log line. Payloads are wrapped in
+`{"data": ...}` and collections come back as `{"list": [...]}`. Without a key —
+or if the call fails or times out — it degrades to the in-memory mock, matching
+JENGA's one-fallback-per-integration rule so the demo never breaks.
 
 `update_purchase_order` remains a pure in-memory mock used by the test suite.
 """
@@ -54,7 +57,7 @@ def _headers() -> dict[str, str]:
 def _map_po(raw: dict) -> dict:
     """Best-effort map a Zip PO payload onto JENGA's PurchaseOrder shape."""
     return {
-        "id": str(raw.get("id") or raw.get("number") or raw.get("po_number") or "PO-?"),
+        "id": str(raw.get("po_number") or raw.get("number") or raw.get("id") or "PO-?"),
         "material": str(raw.get("description") or raw.get("title") or raw.get("name") or "material"),
         "quantity": str(raw.get("quantity") or raw.get("line_item_count") or ""),
         "vendor": str((raw.get("vendor") or {}).get("name") if isinstance(raw.get("vendor"), dict) else raw.get("vendor") or "vendor"),
@@ -79,19 +82,38 @@ async def fetch_purchase_orders() -> list[dict] | None:
             )
             res.raise_for_status()
             payload = res.json()
-            items = payload.get("data") or payload.get("purchase_orders") or payload.get("results") or []
+            # Zip staging wraps collections as {"list": [...], "size", "total"};
+            # the aliases cover older/other tenant shapes.
+            items = (
+                payload.get("list")
+                or payload.get("data")
+                or payload.get("purchase_orders")
+                or payload.get("results")
+                or []
+            )
             return [_map_po(p) for p in items]
 
     return await safe_call("zip.fetch_purchase_orders", _go, None)
 
 
-async def expedite_purchase_order(po_id: str, new_delivery_date: str, reason: str) -> dict:
-    """Expedite `po_id` live on Zip by bringing its delivery date forward, or mock it.
+async def _first_vendor_id(client: httpx.AsyncClient) -> str | None:
+    """The staging tenant ships with one demo vendor; resolve its id live."""
+    res = await client.get(
+        f"{ZIP_BASE}/vendors", params={"page_size": 1}, headers=_headers()
+    )
+    res.raise_for_status()
+    vendors = res.json().get("list") or []
+    return str(vendors[0]["id"]) if vendors else None
 
-    Uses `PATCH {ZIP_PO_PATH}/{po_id}` — the same `zip_update_purchase_order`
-    operation the official ziphq-mcp package exposes — rather than a fabricated
-    intake payload. Returns `{ok, live, detail}`; `live` is True only when the
-    real Zip API accepted the update. Never raises.
+
+async def expedite_purchase_order(po_id: str, new_delivery_date: str, reason: str) -> dict:
+    """Expedite `po_id` live on Zip, or mock it.
+
+    POs on the staging tenant are immutable via the API, so "expedite" raises a
+    *new* Zip PO carrying the local PO number, material and pulled-in date in
+    its description — a real object a judge can open in the Zip UI. Returns
+    `{ok, live, detail}`; `live` is True only when Zip accepted the create.
+    Never raises.
     """
     if not ZIP_KEY:
         return {
@@ -100,26 +122,34 @@ async def expedite_purchase_order(po_id: str, new_delivery_date: str, reason: st
             "detail": "Zip API key not set — expedite applied to local mirror only.",
         }
 
+    local = next((p for p in PURCHASE_ORDERS if p.get("id") == po_id), None)
+    material = (local or {}).get("material", "material")
+
     async def _go():
-        async with httpx.AsyncClient(timeout=5) as client:
-            # PATCH the PO's delivery date. `need_by_date` is Zip's field; we send
-            # a couple of common aliases so a minor schema difference still lands.
+        async with httpx.AsyncClient(timeout=4) as client:
+            vendor_id = await _first_vendor_id(client)
+            if vendor_id is None:
+                raise RuntimeError("no vendor in Zip tenant")
             payload = {
-                "need_by_date": new_delivery_date,
-                "delivery_date": new_delivery_date,
-                "memo": reason,
+                "data": {
+                    "currency": "CAD",
+                    "vendor_id": vendor_id,
+                    "description": (
+                        f"EXPEDITE {po_id} — {material} — need by {new_delivery_date}. {reason}"
+                    )[:500],
+                }
             }
-            res = await client.patch(
-                f"{ZIP_BASE}{ZIP_PO_PATH}/{po_id}", json=payload, headers=_headers()
+            res = await client.post(
+                f"{ZIP_BASE}{ZIP_PO_PATH}", json=payload, headers=_headers()
             )
             res.raise_for_status()
             body = res.json() if res.content else {}
-            ref = str(body.get("id") or body.get("number") or po_id)
-            log.warning("zip: LIVE expedited PO %s -> %s", ref, new_delivery_date)
+            ref = str(body.get("id") or "created")
+            log.warning("zip: LIVE expedite PO %s raised for %s -> %s", ref, po_id, new_delivery_date)
             return {
                 "ok": True,
                 "live": True,
-                "detail": f"Zip PO {ref} expedited to {new_delivery_date} via Zip API.",
+                "detail": f"Zip PO {ref[:8]}… raised on staging to expedite {po_id} → {new_delivery_date}.",
             }
 
     return await safe_call(
