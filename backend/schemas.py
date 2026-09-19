@@ -66,6 +66,44 @@ class Evidence(BaseModel):
     historical: str
 
 
+class SensorStatus(BaseModel):
+    """Curing telemetry for one ticket, as the agent's fifth evidence source."""
+
+    avg_temp_c: float | None = None
+    min_temp_c: float | None = None
+    samples: int = 0
+    below_threshold: bool = False
+    threshold_c: float = 10.0
+    #: The window actually measured over, which is what the UI quotes. Shorter
+    #: than `window_requested_s` while a new curing regime is still filling up.
+    window_s: int = 120
+    window_requested_s: int = 120
+    source: Literal["tiger", "mock"] = "mock"
+
+
+class SensorBucket(BaseModel):
+    """One `time_bucket` row: live off the hypertable, or off the 5-min aggregate."""
+
+    bucket: str
+    avg_temp: float | None = None
+    avg_humidity: float | None = None
+    min_temp: float | None = None
+    max_temp: float | None = None
+    min_humidity: float | None = None
+    max_humidity: float | None = None
+
+
+class SensorPayload(BaseModel):
+    live: list[SensorBucket]
+    history: list[SensorBucket]
+    status: SensorStatus
+
+
+class SensorScenario(BaseModel):
+    ticket_id: str
+    mode: Literal["normal", "cold"]
+
+
 class VerdictStep(BaseModel):
     """One node in the agent's resolution trace. Surfaced in the UI so the
     multi-source reasoning is visible, not just its conclusion (the Rox beat)."""
@@ -85,7 +123,10 @@ class Verdict(BaseModel):
     gptzero: GPTZero
     vision: Vision
     evidence: Evidence
-    #: Step-by-step trace of the four-node LangGraph that produced this verdict.
+    #: Curing telemetry the arbiter's rule 0 read. Absent only on the
+    #: pipeline-error path of an older verdict.
+    sensor: SensorStatus | None = None
+    #: Step-by-step trace of the five-node LangGraph that produced this verdict.
     trace: list[VerdictStep] = []
 
 
@@ -176,6 +217,11 @@ class DisputeRequest(BaseModel):
 
 class StateRequest(BaseModel):
     state: TaskState
+
+
+class ScenarioRequest(BaseModel):
+    #: Anything else is a 422; the simulator has exactly these two regimes.
+    mode: Literal["normal", "cold"]
 
 
 class DisputeResponse(BaseModel):

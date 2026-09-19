@@ -14,7 +14,8 @@ import cpm_engine
 import db
 import documents
 import seed as seed_module
-from integrations import zip_api
+import sensors
+from integrations import tiger, zip_api
 from integrations.gptzero import FLAG_THRESHOLD
 from schemas import (
     AttributionEntry,
@@ -25,6 +26,9 @@ from schemas import (
     HotzoneResponse,
     ParsedDocument,
     PurchaseOrder,
+    ScenarioRequest,
+    SensorPayload,
+    SensorScenario,
     StateRequest,
     Task,
     Verdict,
@@ -114,8 +118,16 @@ async def _graph():
 async def lifespan(_app):
     await db.init()
     await seed_module.seed()
-    print(f"[jenga] storage={db.STORAGE} agent={'live' if AGENT_AVAILABLE else 'stub'}")
-    yield
+    # After seeding: the simulator emits per active ticket, so it needs tickets.
+    sensor_task = sensors.start()
+    print(
+        f"[jenga] storage={db.STORAGE} agent={'live' if AGENT_AVAILABLE else 'stub'} "
+        f"sensors={'on' if sensor_task else 'off'} telemetry={tiger.source()}"
+    )
+    try:
+        yield
+    finally:
+        await sensors.stop(sensor_task)
 
 
 app = FastAPI(title="JENGA", lifespan=lifespan)
@@ -137,6 +149,24 @@ async def get_graph():
 @app.get("/api/hotzones", response_model=HotzoneResponse)
 async def get_hotzones():
     return await browserbase_hotzones.hotzones()
+
+
+@app.get("/api/sensors/{ticket_id}", response_model=SensorPayload)
+async def get_sensors(ticket_id: str):
+    """Curing telemetry: live `time_bucket` off the hypertable, plus the continuous
+    aggregate. `history` is empty in mock mode — there is no aggregate to read."""
+    return {
+        "live": await tiger.recent_buckets(ticket_id),
+        "history": await tiger.history_5min(ticket_id),
+        "status": await tiger.curing_status(ticket_id),
+    }
+
+
+@app.post("/api/sensors/scenario/{ticket_id}", response_model=SensorScenario)
+async def set_sensor_scenario(ticket_id: str, body: ScenarioRequest):
+    """Demo control: drop a ticket into a cold snap, or bring it back."""
+    sensors.set_scenario(ticket_id, body.mode)
+    return {"ticket_id": ticket_id, "mode": sensors.get_scenario(ticket_id)}
 
 
 @app.post("/api/documents/parse", response_model=ParsedDocument)
@@ -202,7 +232,15 @@ async def verify(task_id: str, body: VerifyRequest, strict: bool = True):
     flagged = bool(gz.get("flagged")) or (
         isinstance(score, (int, float)) and score > FLAG_THRESHOLD
     )
-    if strict and flagged:
+    # ...except over the arbiter's rule 0. This gate exists to stop a generated
+    # narrative auto-approving; it has no business demoting a dispute the site's
+    # own thermometer raised. A measurement outranks an authorship heuristic, and
+    # the whole point of putting the sensor rule first is lost if the route
+    # quietly puts the gate back in front of it.
+    sensor_disputed = verdict["status"] == "DISPUTED" and bool(
+        (verdict.get("sensor") or {}).get("below_threshold")
+    )
+    if strict and flagged and not sensor_disputed:
         verdict["status"] = "UNDER_REVIEW"
         gz["flagged"] = True
         # A hold this gate creates owes the same two invariants the arbiter's
