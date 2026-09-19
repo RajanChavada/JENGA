@@ -496,6 +496,11 @@ async def add_evidence(row):
                 ticket_id=row["task_id"],
                 submitted_by_role="subcontractor",
                 report_text=row.get("report_text") or "",
+                # bare .get: a report GPTZero never scored stores NULL, which is
+                # not the same fact as a confident 0.0. decided_at stays unset.
+                gptzero_score=row.get("gptzero_score"),
+                gptzero_flag=row.get("gptzero_flag"),
+                owner_decision=row.get("owner_decision"),
                 # image_base64/transcript are payloads, not URLs — media_url stays empty
                 submitted_at=_dt(row.get("created_at"), naive=True),
             )
