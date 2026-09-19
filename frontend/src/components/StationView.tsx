@@ -1,9 +1,9 @@
 'use client';
 
-import { Suspense, useMemo, useRef, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState, type ElementRef } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { Billboard, OrbitControls, Text } from '@react-three/drei';
-import type { Mesh, MeshStandardMaterial } from 'three';
+import { Billboard, CameraControls, Text } from '@react-three/drei';
+import { Vector3, type Mesh, type MeshStandardMaterial, type PerspectiveCamera } from 'three';
 import {
   DENIED_STYLE,
   STATE_STYLE,
@@ -14,7 +14,17 @@ import {
   zoneVisual,
 } from '@/lib/theme';
 import { useJenga } from '@/store/useJenga';
+import { focusedZone, framePose } from '@/lib/focus';
 import type { Task, Zone } from '@/lib/types';
+
+/** Where the camera rests when nothing is focused. */
+const HOME_POSITION: [number, number, number] = [22, 17, 22];
+
+const MIN_DISTANCE = 8;
+const MAX_DISTANCE = 40;
+
+/** Other zones fade to this share of their normal opacity while one is focused. */
+const DIMMED_OPACITY = 0.15;
 
 /** Each label parked outside the footprint on a distinct side so none overlap. */
 const LABEL_OFFSET: Record<Zone, [number, number, number]> = {
@@ -30,12 +40,15 @@ function ZoneMesh({
   tasks,
   denied,
   selected,
+  dimmed,
   onSelect,
 }: {
   zone: Zone;
   tasks: Task[];
   denied: Set<string>;
   selected: boolean;
+  /** Another zone is focused: fade this one so the focused zone is never hidden behind it. */
+  dimmed: boolean;
   onSelect: () => void;
 }) {
   const box = ZONE_BOXES[zone];
@@ -49,6 +62,11 @@ function ZoneMesh({
   useFrame(({ clock }) => {
     if (!ref.current) return;
     const mat = ref.current.material as MeshStandardMaterial;
+    // Ease toward the target rather than snapping, so the fade reads as part of
+    // the camera move. `style.opacity` is also the prop below, so a state change
+    // still lands instantly and this only ever adds the dimming on top.
+    const target = style.opacity * (dimmed ? DIMMED_OPACITY : 1);
+    mat.opacity += (target - mat.opacity) * 0.2;
     if (style.pulse) {
       mat.emissiveIntensity = 0.4 + 0.35 * Math.sin(clock.elapsedTime * 3);
     } else {
@@ -58,7 +76,14 @@ function ZoneMesh({
 
   return (
     <group position={box.position}>
-      <mesh ref={ref} onClick={onSelect}>
+      <mesh
+        ref={ref}
+        onClick={(e) => {
+          // A hit is not a miss: keep Canvas.onPointerMissed (clear focus) out of it.
+          e.stopPropagation();
+          onSelect();
+        }}
+      >
         <boxGeometry args={box.size} />
         <meshStandardMaterial
           color={style.hex}
@@ -75,7 +100,7 @@ function ZoneMesh({
         so top-anchored labels collide at most camera angles. Billboard keeps them
         readable as the scene orbits.
       */}
-      <Billboard position={LABEL_OFFSET[zone]}>
+      <Billboard position={LABEL_OFFSET[zone]} visible={!dimmed}>
         <Text
           fontSize={0.42}
           color={selected ? '#0f172a' : '#475569'}
@@ -90,10 +115,67 @@ function ZoneMesh({
   );
 }
 
+const reducedMotion = () =>
+  typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/**
+ * Drives the camera from the focus. A focused zone is framed along the angle the
+ * user has orbited to (see `framePose`); clearing the focus returns to the home pose. The first run after a
+ * (re)mount is instant: nothing should animate on load, and a WebGL-context
+ * remount must land straight back on the focused zone.
+ */
+function CameraRig({ zone }: { zone: Zone | null }) {
+  const controls = useRef<ElementRef<typeof CameraControls>>(null);
+  const first = useRef(true);
+
+  useEffect(() => {
+    const c = controls.current;
+    if (!c) return;
+    const animate = !first.current && !reducedMotion();
+    if (zone) {
+      // Look at the zone from wherever the user is already looking. `fitToBox`
+      // would frame it too, but it snaps the camera to the nearest axis.
+      const here = c.getPosition(new Vector3(), true);
+      const target = c.getTarget(new Vector3(), true);
+      const pose = framePose(
+        [here.x, here.y, here.z],
+        [target.x, target.y, target.z],
+        ZONE_BOXES[zone],
+        (c.camera as PerspectiveCamera).fov,
+        { min: MIN_DISTANCE, max: MAX_DISTANCE },
+      );
+      void c.setLookAt(...pose.position, ...pose.target, animate);
+    } else if (!first.current) {
+      void c.setLookAt(...HOME_POSITION, 0, 0, 0, animate);
+    }
+    first.current = false;
+  }, [zone]);
+
+  return (
+    <CameraControls
+      ref={controls}
+      minDistance={MIN_DISTANCE}
+      maxDistance={MAX_DISTANCE}
+      smoothTime={0.3}
+      // camera-controls ACTION values: 0 none, 1 rotate, 16 dolly; touch 64 rotate,
+      // 1024 dolly. Pan (truck) stays off, as it was under OrbitControls.
+      mouseButtons={{ left: 1, middle: 0, right: 0, wheel: 16 }}
+      touches={{ one: 64, two: 1024, three: 0 }}
+    />
+  );
+}
+
 export function StationView() {
   const tasks = useJenga((s) => s.tasks);
+  const selectedTaskId = useJenga((s) => s.selectedTaskId);
   const selectedZone = useJenga((s) => s.selectedZone);
   const selectZone = useJenga((s) => s.selectZone);
+  const clearFocus = useJenga((s) => s.clearFocus);
+  // The zone the focus points at: the selected task's zone, or the selected zone.
+  const focused = useMemo(
+    () => focusedZone(selectedTaskId, selectedZone, tasks),
+    [selectedTaskId, selectedZone, tasks],
+  );
   const reports = useJenga((s) => s.reports);
   const denied = useMemo(() => deniedTaskIds(tasks, reports), [tasks, reports]);
   // WebGL contexts get evicted by the browser under pressure (and by dev-server
@@ -118,7 +200,9 @@ export function StationView() {
       {/* Zones span ~14 units; pull back far enough to frame the whole station. */}
       <Canvas
         key={glGeneration}
-        camera={{ position: [22, 17, 22], fov: 40 }}
+        camera={{ position: HOME_POSITION, fov: 40 }}
+        // A click on empty space (not a drag) clears the focus.
+        onPointerMissed={() => clearFocus()}
         onCreated={({ gl }) => {
           gl.domElement.addEventListener('webglcontextlost', (e) => {
             e.preventDefault();
@@ -141,12 +225,13 @@ export function StationView() {
               zone={z}
               tasks={byZone[z]}
               denied={denied}
-              selected={selectedZone === z}
-              onSelect={() => selectZone(selectedZone === z ? null : z)}
+              selected={focused === z}
+              dimmed={focused !== null && focused !== z}
+              onSelect={() => selectZone(selectedZone === z ? null : z, 'twin')}
             />
           ))}
         </Suspense>
-        <OrbitControls enablePan={false} minDistance={8} maxDistance={40} />
+        <CameraRig zone={focused} />
       </Canvas>
     </div>
   );

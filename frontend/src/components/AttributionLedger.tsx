@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronDown, Link2, PackageCheck, Zap } from 'lucide-react';
 import { useJenga } from '@/store/useJenga';
+import { displayId } from '@/lib/format';
 import type { PurchaseOrder } from '@/lib/types';
 
 /**
@@ -139,7 +140,7 @@ function POCard({ po }: { po: PurchaseOrder }) {
       className="rounded-lg border border-slate-200 bg-white p-3 text-[11px] shadow-sm"
     >
       <div className="flex items-baseline justify-between">
-        <span className="font-mono text-slate-700">{po.id}</span>
+        <span className="font-mono text-slate-700">{displayId(po.id)}</span>
         <span
           className={`rounded-full border px-1.5 py-0.5 text-[9px] uppercase tracking-wider ${STATUS_TONE[po.status]}`}
         >
@@ -152,7 +153,7 @@ function POCard({ po }: { po: PurchaseOrder }) {
       <p className="text-[10px] text-slate-400">
         {po.vendor} → {po.delivery_date}
         {po.linked_task && (
-          <span className="ml-1 text-slate-500">· linked {po.linked_task}</span>
+          <span className="ml-1 text-slate-500">· linked {displayId(po.linked_task)}</span>
         )}
       </p>
       {po.last_action && <p className="mt-1 text-[10px] text-sky-700">{po.last_action}</p>}
@@ -214,7 +215,7 @@ function POCard({ po }: { po: PurchaseOrder }) {
                     }}
                     className="block w-full truncate px-2 py-1 text-left text-[10px] text-slate-600 hover:bg-slate-50"
                   >
-                    <span className="font-mono text-slate-400">{t.id}</span> · {t.name}
+                    <span className="font-mono text-slate-400">{displayId(t.id)}</span> · {t.name}
                   </button>
                 ))
               )}

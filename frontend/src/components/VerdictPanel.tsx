@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { AlertTriangle, Check, Cpu, HelpCircle, Loader2, X } from 'lucide-react';
 import { paceCard } from '@/lib/fixtures';
 import { useJenga } from '@/store/useJenga';
+import { displayId } from '@/lib/format';
 import type { Verdict, VerdictStep } from '@/lib/types';
 
 /* -------------------------------------------------------------------------- */
@@ -358,7 +359,7 @@ function Header({ verdict, onClose }: { verdict: Verdict; onClose: () => void })
         </span>
         <div>
           <div className="flex items-baseline gap-2">
-            <span className="font-mono text-xs text-slate-400">{verdict.task_id}</span>
+            <span className="font-mono text-xs text-slate-400">{displayId(verdict.task_id)}</span>
             <span className={`text-sm font-semibold ${s.text}`}>
               {verdict.status.replace('_', ' ')}
             </span>

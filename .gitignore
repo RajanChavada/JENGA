@@ -20,3 +20,6 @@ venv/
 .vercel
 .idea/
 .vscode/
+
+# local run artifacts (uploaded media from dev runs)
+.data/
