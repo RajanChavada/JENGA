@@ -30,9 +30,13 @@ export interface Task {
   x: number;
   y: number;
   duration_days: number;
+  /** Contractual due day: an offset from the project start. Absent when the schedule has no dates. */
+  due_day?: number | null;
   state: TaskState;
   spec_text: string;
   depends_on: string[];
+  /** While the task is derived `blocked`: the predecessors not yet verified. */
+  blocked_by?: string[];
   es: number;
   ef: number;
   ls: number;
@@ -215,3 +219,97 @@ export interface Submission {
   image: string;
   transcript: string | null;
 }
+
+/* --- contractor portal ---------------------------------------------------- */
+
+export type OwnerDecision = 'pending' | 'approved' | 'rejected';
+
+export interface ImpactedTask {
+  id: string;
+  name: string;
+  finish_date_before: string;
+  finish_date_after: string;
+  due_date: string | null;
+  late_by_days: number;
+  newly_late: boolean;
+}
+
+/** What denying an update would cost the schedule. Advisory: no duration changes. */
+export interface Impact {
+  task_id: string;
+  rework_days: number;
+  rationale: string[];
+  float_consumed: number;
+  absorbed_by_float: boolean;
+  project_slipped_days: number;
+  baseline_finish_date: string;
+  predicted_finish_date: string;
+  project_deadline_date: string;
+  days_past_deadline: number;
+  critical_path_changed: boolean;
+  affected: ImpactedTask[];
+}
+
+/** The part of an Impact the contractor sees. */
+export type ContractorImpact = Pick<
+  Impact,
+  'rework_days' | 'predicted_finish_date' | 'project_slipped_days'
+>;
+
+export interface Report {
+  id: string;
+  task_id: string;
+  project_id: string;
+  report_text: string;
+  /** The AI's recommendation. Null in the contractor's view: it never sees it. */
+  verdict: Verdict | null;
+  owner_decision: OwnerDecision;
+  owner_note: string | null;
+  /** The owner approved a report the AI had not approved. */
+  ai_override: boolean;
+  /** Stored when the owner denies. The contractor's copy is reduced to `ContractorImpact`. */
+  impact: Impact | ContractorImpact | null;
+  submitted_at: string | null;
+  decided_at: string | null;
+}
+
+export interface PortalParty {
+  id: string;
+  name: string;
+}
+
+export interface PortalProject {
+  id: string;
+  name: string;
+  owner: PortalParty;
+  contractor: PortalParty;
+  /** ISO date that day 0 of the schedule falls on. */
+  start_date: string;
+  total: number;
+  verified: number;
+  active: number;
+  under_review: number;
+  blocked: number;
+  awaiting_review: number;
+}
+
+export interface PortalOverview {
+  owners: PortalParty[];
+  companies: PortalParty[];
+  projects: PortalProject[];
+}
+
+export interface QueueItem {
+  /** "If you deny": the predicted cost of denying this report. */
+  impact: Impact | null;
+  report: Report;
+  project_name: string;
+  task_name: string;
+}
+
+export interface DecisionResponse {
+  report: Report;
+  tasks: Task[];
+}
+
+export type Role = 'owner' | 'contractor';

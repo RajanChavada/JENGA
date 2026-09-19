@@ -4,7 +4,15 @@ import { Suspense, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { Billboard, OrbitControls, Text } from '@react-three/drei';
 import type { Mesh, MeshStandardMaterial } from 'three';
-import { ZONE_BOXES, ZONE_LABEL, STATE_STYLE, aggregateZoneState } from '@/lib/theme';
+import {
+  DENIED_STYLE,
+  STATE_STYLE,
+  ZONE_BOXES,
+  ZONE_LABEL,
+  deniedTaskIds,
+  zoneProgress,
+  zoneVisual,
+} from '@/lib/theme';
 import { useJenga } from '@/store/useJenga';
 import type { Task, Zone } from '@/lib/types';
 
@@ -20,25 +28,28 @@ const LABEL_OFFSET: Record<Zone, [number, number, number]> = {
 function ZoneMesh({
   zone,
   tasks,
+  denied,
   selected,
   onSelect,
 }: {
   zone: Zone;
   tasks: Task[];
+  denied: Set<string>;
   selected: boolean;
   onSelect: () => void;
 }) {
   const box = ZONE_BOXES[zone];
-  const state = aggregateZoneState(tasks.map((t) => t.state));
-  const style = STATE_STYLE[state];
+  const state = zoneVisual(tasks, denied);
+  const style = state === 'denied' ? DENIED_STYLE : STATE_STYLE[state];
+  const progress = zoneProgress(tasks);
   const ref = useRef<Mesh>(null);
 
-  // under_review pulses, matching the amber pulse on the 2D node. Same state,
-  // same read, two projections.
+  // under_review pulses, matching the amber pulse on the 2D node, and a denial
+  // pulses red. Same state, same read, two projections.
   useFrame(({ clock }) => {
     if (!ref.current) return;
     const mat = ref.current.material as MeshStandardMaterial;
-    if (state === 'under_review') {
+    if (style.pulse) {
       mat.emissiveIntensity = 0.4 + 0.35 * Math.sin(clock.elapsedTime * 3);
     } else {
       mat.emissiveIntensity = selected ? 0.5 : 0.12;
@@ -72,7 +83,7 @@ function ZoneMesh({
           outlineWidth={0.02}
           outlineColor="#ffffff"
         >
-          {ZONE_LABEL[zone]}
+          {progress ? `${ZONE_LABEL[zone]} · ${progress}` : ZONE_LABEL[zone]}
         </Text>
       </Billboard>
     </group>
@@ -83,6 +94,8 @@ export function StationView() {
   const tasks = useJenga((s) => s.tasks);
   const selectedZone = useJenga((s) => s.selectedZone);
   const selectZone = useJenga((s) => s.selectZone);
+  const reports = useJenga((s) => s.reports);
+  const denied = useMemo(() => deniedTaskIds(tasks, reports), [tasks, reports]);
   // WebGL contexts get evicted by the browser under pressure (and by dev-server
   // reload churn), leaving a correctly-sized but permanently blank canvas.
   // Bumping this key remounts the <Canvas>, which creates a fresh context —
@@ -127,6 +140,7 @@ export function StationView() {
               key={z}
               zone={z}
               tasks={byZone[z]}
+              denied={denied}
               selected={selectedZone === z}
               onSelect={() => selectZone(selectedZone === z ? null : z)}
             />

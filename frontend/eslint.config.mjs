@@ -8,7 +8,7 @@ const eslintConfig = defineConfig([
   {
     // react-hooks/set-state-in-effect (new in eslint-plugin-react-hooks v6, bundled
     // by eslint-config-next) flags the standard "fetch in an effect, setState with
-    // the result" pattern used throughout app/page.tsx and components/TicketPanel.tsx.
+    // the result" pattern used throughout the app.
     // That pattern is explicitly endorsed by the React docs (an effect syncing with
     // an external system), so the rule is disabled rather than restructuring
     // straightforward data loading into something more convoluted.

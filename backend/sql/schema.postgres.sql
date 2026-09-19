@@ -105,3 +105,9 @@ CREATE TABLE IF NOT EXISTS evidence_verdicts (
   verdict JSONB,
   created_at TIMESTAMPTZ DEFAULT now()
 );
+
+-- Owner review of a contractor report (portal).
+ALTER TABLE IF EXISTS reports ADD COLUMN IF NOT EXISTS owner_note TEXT;
+ALTER TABLE IF EXISTS reports ADD COLUMN IF NOT EXISTS ai_override BOOLEAN;
+ALTER TABLE IF EXISTS tickets ADD COLUMN IF NOT EXISTS due_day INTEGER;
+ALTER TABLE IF EXISTS reports ADD COLUMN IF NOT EXISTS impact JSONB;

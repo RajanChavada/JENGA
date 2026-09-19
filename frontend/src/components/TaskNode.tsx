@@ -2,7 +2,8 @@
 
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { motion } from 'framer-motion';
-import { STATE_STYLE } from '@/lib/theme';
+import { DENIED_STYLE, STATE_STYLE, isDenied } from '@/lib/theme';
+import { useJenga } from '@/store/useJenga';
 import type { Task } from '@/lib/types';
 
 export interface TaskNodeData extends Record<string, unknown> {
@@ -17,11 +18,11 @@ export const NODE_H = 64;
 
 function TaskNodeImpl({ data }: NodeProps) {
   const { task, selected, thumbnail } = data as unknown as TaskNodeData;
-  const style = STATE_STYLE[task.state];
+  const denied = useJenga((s) => isDenied(task, s.reports));
+  const style = denied ? DENIED_STYLE : STATE_STYLE[task.state];
 
   return (
     <motion.div
-      layout
       animate={{ scale: selected ? 1.06 : 1 }}
       transition={{ type: 'spring', stiffness: 320, damping: 26 }}
       style={{ width: NODE_W, height: NODE_H }}
@@ -30,7 +31,7 @@ function TaskNodeImpl({ data }: NodeProps) {
         style.chip,
         selected ? 'ring-2 ring-slate-900/70' : '',
         task.is_critical ? 'shadow-[0_0_0_1px_rgba(220,38,38,0.55)]' : '',
-        task.state === 'under_review' ? 'animate-pulse' : '',
+        task.state === 'under_review' || denied ? 'animate-pulse' : '',
       ].join(' ')}
     >
       <Handle type="target" position={Position.Left} className="!h-1.5 !w-1.5 !bg-slate-300" />
