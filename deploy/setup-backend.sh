@@ -2,7 +2,7 @@
 # One-command JENGA backend setup for a fresh Ubuntu box (Vultr).
 #
 #   ssh root@<ip>
-#   curl -fsSL https://raw.githubusercontent.com/TheFJcurve/JENGA/feat/light-theme-map-zip-rox/deploy/setup-backend.sh | bash -s -- [domain]
+#   curl -fsSL https://raw.githubusercontent.com/RajanChavada/JENGA/main/deploy/setup-backend.sh | bash -s -- [domain]
 #
 # or clone first and run ./deploy/setup-backend.sh [domain].
 #
@@ -14,8 +14,10 @@
 # Idempotent: safe to re-run for updates (git pull + pip install + restart).
 set -euo pipefail
 
-REPO="https://github.com/TheFJcurve/JENGA.git"
-BRANCH="feat/light-theme-map-zip-rox"
+# Defaults target the team repo's main, which both GitHub repos keep in sync.
+# Override for a feature-branch deploy: JENGA_REPO=... JENGA_BRANCH=... ./setup-backend.sh
+REPO="${JENGA_REPO:-https://github.com/RajanChavada/JENGA.git}"
+BRANCH="${JENGA_BRANCH:-main}"
 APP_DIR="/opt/jenga"
 
 PUBLIC_IP=$(curl -fsS https://api.ipify.org)
