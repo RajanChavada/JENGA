@@ -8,6 +8,7 @@ import { VerdictPanel } from '@/components/VerdictPanel';
 import { AttributionLedger } from '@/components/AttributionLedger';
 import { SubmitUpdateModal } from '@/components/SubmitUpdateModal';
 import { MacroHeatmap } from '@/components/MacroHeatmap';
+import { SensorStrip } from '@/components/SensorStrip';
 import { useJenga } from '@/store/useJenga';
 
 // Three.js touches window during module init, so keep it off the server.
@@ -113,6 +114,9 @@ export default function Home() {
                 <WorkGraph />
                 <VerdictPanel />
               </div>
+              {/* Under the DAG, above the schedule. Renders nothing until a
+                  non-pending ticket is selected. */}
+              <SensorStrip />
               <div className="min-h-[210px] flex-1 border-t border-slate-200">
                 <Timeline />
               </div>

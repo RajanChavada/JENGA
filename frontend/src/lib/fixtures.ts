@@ -8,11 +8,14 @@ import type {
   GraphResponse,
   HotzoneResponse,
   PurchaseOrder,
+  SensorPayload,
+  SensorStatus,
   Submission,
   Task,
   TaskState,
   Verdict,
   VerdictStatus,
+  VerdictStep,
   Zone,
 } from './types';
 
@@ -188,6 +191,91 @@ function historicalFor(task: Task | undefined): string {
       ? 'on the critical path with zero float'
       : `carrying ${task.total_float} day${task.total_float === 1 ? '' : 's'} of total float`;
   return `${task.id} scheduled day ${task.es}–${task.ef} (${task.duration_days}d), ${float}. Logged state at submission: ${task.state}. ${task.depends_on.length ? `Predecessors ${task.depends_on.join(', ')} closed out prior.` : 'No predecessor activities.'}`;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Curing telemetry — offline mirror of backend/integrations/tiger.py          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What the sensor endpoint yields when there is nothing to read: no backend, or
+ * a ticket the simulator never emitted for. Deliberately a real zero-sample
+ * payload rather than invented readings — an offline sparkline that moved would
+ * be the panel claiming a measurement nobody took.
+ */
+export function sensors(): SensorPayload {
+  return {
+    live: [],
+    history: [],
+    status: {
+      avg_temp_c: null,
+      min_temp_c: null,
+      samples: 0,
+      below_threshold: false,
+      threshold_c: 10,
+      min_samples: 10,
+      window_s: 120,
+      window_requested_s: 120,
+      source: 'mock',
+    },
+  };
+}
+
+/**
+ * Mirrors `_window_label` in backend/agent.py: seconds under two minutes, whole
+ * minutes at or above it. Every string quoting a window goes through this, so
+ * neither half of the app can claim an averaging window it did not measure.
+ */
+export function windowLabel(seconds: number): string {
+  return seconds >= 120 ? `${Math.floor(seconds / 60)} min` : `${seconds} s`;
+}
+
+/** Mirrors the backend's `:g` on the threshold — `10`, never `10.0`. */
+export function thresholdLabel(celsius: number): string {
+  return String(Number(celsius.toPrecision(6)));
+}
+
+/**
+ * Offline mirror of `_sensor_card` in backend/agent.py, string for string.
+ *
+ * Four states, tested in this order: no samples, too sparse to judge, below
+ * threshold, warm enough. The sparse state is `info` and not `ok` because "too
+ * few readings to judge" and "the pour is fine" are different facts — and it
+ * has to be re-derived from `samples < min_samples` here for the same reason
+ * the backend re-derives it: `below_threshold` folds both into `false`.
+ *
+ * The floor and the window come off the payload, never from a constant here;
+ * the backend clamps the window to the current curing regime, so it is
+ * routinely something other than two minutes.
+ */
+export function sensorCard(sensor?: SensorStatus | null): {
+  detail: string;
+  signal: VerdictStep['signal'];
+} {
+  const avg = sensor?.avg_temp_c ?? null;
+  const samples = sensor?.samples ?? 0;
+  if (!sensor || !samples || avg === null) {
+    return { detail: 'No sensor telemetry for this ticket.', signal: 'info' };
+  }
+  const window = windowLabel(sensor.window_s ?? 0);
+  const threshold = thresholdLabel(sensor.threshold_c ?? 10);
+  const floor = sensor.min_samples || 10;
+  if (samples < floor) {
+    return {
+      detail: `Telemetry too sparse to judge: ${samples} reading${samples === 1 ? '' : 's'} in the last ${window}, ${floor} needed.`,
+      signal: 'info',
+    };
+  }
+  if (sensor.below_threshold) {
+    return {
+      detail: `Curing temp avg ${avg.toFixed(1)} °C over last ${window}, below ${threshold} °C threshold.`,
+      signal: 'bad',
+    };
+  }
+  return {
+    detail: `Curing temp avg ${avg.toFixed(1)} °C over last ${window} (threshold ${threshold} °C).`,
+    signal: 'ok',
+  };
 }
 
 /**

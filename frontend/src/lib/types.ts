@@ -56,7 +56,54 @@ export interface GraphResponse {
 
 export type VerdictStatus = 'APPROVED' | 'DISPUTED' | 'UNDER_REVIEW';
 
-/** One node in the agent's resolution trace (the four-node LangGraph). */
+/** Which curing regime the simulator is driving a ticket through. */
+export type SensorMode = 'normal' | 'cold';
+
+/** Curing telemetry for one ticket — the agent's fifth evidence source. */
+export interface SensorStatus {
+  avg_temp_c: number | null;
+  min_temp_c: number | null;
+  samples: number;
+  /**
+   * The arbiter's rule 0 reads this and nothing else. It stays false while
+   * `samples < min_samples`, so it folds "too sparse to judge" and "warm
+   * enough" into the same value — never render it as "the pour is fine".
+   */
+  below_threshold: boolean;
+  threshold_c: number;
+  /** Readings needed before the average is allowed to decide anything. */
+  min_samples: number;
+  /** The window actually measured. Shorter than requested while a new curing
+   * regime is still filling up, and the only one any string may quote. */
+  window_s: number;
+  window_requested_s: number;
+  source: 'tiger' | 'mock';
+}
+
+/** One `time_bucket` row: live off the hypertable, or off the 5-min aggregate. */
+export interface SensorBucket {
+  bucket: string;
+  avg_temp: number | null;
+  avg_humidity: number | null;
+  min_temp: number | null;
+  max_temp: number | null;
+  min_humidity: number | null;
+  max_humidity: number | null;
+}
+
+export interface SensorPayload {
+  live: SensorBucket[];
+  /** The continuous aggregate. Always empty in mock mode — there is none to read. */
+  history: SensorBucket[];
+  status: SensorStatus;
+}
+
+export interface SensorScenario {
+  ticket_id: string;
+  mode: SensorMode;
+}
+
+/** One node in the agent's resolution trace (the five-node LangGraph). */
 export interface VerdictStep {
   node: string;
   title: string;
@@ -88,6 +135,11 @@ export interface Verdict {
     visual: string;
     historical: string;
   };
+  /**
+   * Curing telemetry the arbiter's rule 0 read. Absent on a fixture verdict and
+   * on the backend's pipeline-error path.
+   */
+  sensor?: SensorStatus | null;
   /** Step-by-step agent trace. Synthesized on the client when absent. */
   trace?: VerdictStep[];
 }

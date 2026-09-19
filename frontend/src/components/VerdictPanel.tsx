@@ -2,6 +2,7 @@
 
 import { AnimatePresence, motion } from 'framer-motion';
 import { AlertTriangle, Check, Cpu, HelpCircle, X } from 'lucide-react';
+import { sensorCard, thresholdLabel, windowLabel } from '@/lib/fixtures';
 import { useJenga } from '@/store/useJenga';
 import type { Verdict, VerdictStep } from '@/lib/types';
 
@@ -49,7 +50,7 @@ export function VerdictPanel() {
 
           <AgentTrace verdict={verdict} />
 
-          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-4">
+          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-4 lg:grid-cols-5">
             <Column title="Blueprint specification" body={verdict.evidence.spec} />
             <ClaimColumn verdict={verdict} />
             <Column
@@ -65,6 +66,7 @@ export function VerdictPanel() {
               }
             />
             <Column title="Historical comparison" body={verdict.evidence.historical} />
+            <TelemetryColumn verdict={verdict} />
           </div>
 
           <Reasoning verdict={verdict} />
@@ -121,7 +123,7 @@ const SIGNAL_DOT: Record<VerdictStep['signal'], string> = {
 };
 
 /**
- * Derive the four-node trace from the verdict when the backend didn't send one
+ * Derive the five-node trace from the verdict when the backend didn't send one
  * (pure-fixtures / offline mode), so the agent's reasoning is always visible.
  */
 function synthesizeTrace(v: Verdict): VerdictStep[] {
@@ -135,9 +137,25 @@ function synthesizeTrace(v: Verdict): VerdictStep[] {
         ? { node: 'vision_analysis', title: '2 · Visual analysis', detail: `Photo contradicts the claim (${vc}% confidence).`, signal: 'bad' }
         : { node: 'vision_analysis', title: '2 · Visual analysis', detail: `Image cannot establish the claim (${vc}% confidence).`, signal: 'warn' };
 
+  const telemetry: VerdictStep = {
+    node: 'sensor_check',
+    title: '4 · Site telemetry',
+    ...sensorCard(v.sensor),
+  };
+
+  /*
+    The backend picks between two DISPUTED lines by the name of the arbiter rule
+    that fired, and `schemas.Verdict` strips that name from the response, so
+    this mirror cannot reproduce the choice. It renders the generic line for
+    every dispute. Guessing the telemetry line from a cold sensor block would be
+    the wrong trade: every active ticket streams telemetry, so a contradicted
+    photograph on a ticket that happens to be cold would be credited to the
+    thermometer. Under-claiming here is the safe direction — the same reason
+    `asAdvisory` refuses to derive a status offline.
+  */
   const arbiter: VerdictStep = {
     node: 'arbiter',
-    title: '4 · Arbiter',
+    title: '5 · Arbiter',
     detail:
       v.status === 'APPROVED'
         ? 'Sources agree — approved.'
@@ -165,6 +183,7 @@ function synthesizeTrace(v: Verdict): VerdictStep[] {
         : 'No close historical match found.',
       signal: 'info',
     },
+    telemetry,
     arbiter,
   ];
 }
@@ -175,9 +194,9 @@ function AgentTrace({ verdict }: { verdict: Verdict }) {
     <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
       <div className="mb-2 flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-slate-400">
         <Cpu size={12} />
-        Agent resolution · four conflicting sources
+        Agent resolution · four evidence sources, one arbiter
       </div>
-      <ol className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+      <ol className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
         {steps.map((s, i) => (
           <motion.li
             key={s.node + i}
@@ -254,6 +273,60 @@ function ClaimColumn({ verdict }: { verdict: Verdict }) {
       body={verdict.evidence.claim}
       footer={a.footer}
       footerTone={a.tone}
+    />
+  );
+}
+
+/**
+ * The fifth evidence source. Shows the readings themselves rather than
+ * repeating the trace card's sentence, and reads the floor and the window off
+ * the payload — the backend clamps the window to the current curing regime, so
+ * "2 min" is a guess that is usually wrong.
+ *
+ * The three non-empty footers name their source; the empty one does not. A
+ * verdict whose telemetry read *failed* arrives with no source at all and
+ * Pydantic fills in `mock`, so a badge there would be asserting something the
+ * verdict does not know.
+ */
+function TelemetryColumn({ verdict }: { verdict: Verdict }) {
+  const s = verdict.sensor;
+  if (!s || !s.samples || s.avg_temp_c === null) {
+    return (
+      <Column
+        title="Site telemetry"
+        body="No curing telemetry on record for this ticket."
+        footer="No readings — telemetry did not weigh on this verdict"
+      />
+    );
+  }
+
+  const where = s.source === 'tiger' ? 'Tiger Data' : 'Simulated store';
+  const window = windowLabel(s.window_s);
+  const threshold = thresholdLabel(s.threshold_c);
+  const floor = s.min_samples || 10;
+  const low = s.min_temp_c === null ? '' : `, low ${s.min_temp_c.toFixed(1)} °C`;
+  const body = `Curing thermocouples on the pour: average ${s.avg_temp_c.toFixed(1)} °C${low} across ${s.samples} reading${s.samples === 1 ? '' : 's'} in the last ${window}.`;
+
+  if (s.samples < floor) {
+    return (
+      <Column
+        title="Site telemetry"
+        body={body}
+        footer={`${where} · ${s.samples} of ${floor} readings — too sparse to judge`}
+        footerTone="warn"
+      />
+    );
+  }
+  return (
+    <Column
+      title="Site telemetry"
+      body={body}
+      footer={
+        s.below_threshold
+          ? `${where} · below the ${threshold} °C curing minimum`
+          : `${where} · at or above the ${threshold} °C curing minimum`
+      }
+      footerTone={s.below_threshold ? 'bad' : 'ok'}
     />
   );
 }

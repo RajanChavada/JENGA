@@ -4,6 +4,9 @@ import type {
   GraphResponse,
   HotzoneResponse,
   PurchaseOrder,
+  SensorMode,
+  SensorPayload,
+  SensorScenario,
   Task,
   Verdict,
 } from './types';
@@ -74,6 +77,61 @@ export function verify(
       }),
     },
     () => fx.verdictFor(submissionId, tasks, strict),
+  );
+}
+
+/** One warning for a dead sensor stream, not one every two seconds. */
+let sensorsWarned = false;
+/** Skip the network until this timestamp after a failure. See `fetchSensors`. */
+let sensorsRetryAt = 0;
+const SENSOR_BACKOFF_MS = 10000;
+
+/**
+ * Curing telemetry for one ticket. Deliberately does **not** go through
+ * `call()`.
+ *
+ * `call()` latches the global offline flag on its first failure, which is the
+ * right trade for a one-shot user action and the wrong one for something that
+ * fires every two seconds: a single timed-out poll would put the rest of the
+ * session on fixtures, including the live verification the demo turns on. So a
+ * poll degrades on its own instead.
+ *
+ * How it degrades, in order: it honours the global offline flag and never
+ * touches the network once the app already knows it is offline; a failure logs
+ * one warning for the whole session and returns an empty payload, so nothing
+ * rejects and the strip simply empties; and a failure backs the poll off for
+ * ten seconds, so a dead backend costs one refused request every ten seconds
+ * rather than one every two, while still recovering on its own if the backend
+ * comes back mid-demo.
+ */
+export async function fetchSensors(ticketId: string): Promise<SensorPayload> {
+  if (offline || Date.now() < sensorsRetryAt) return fx.sensors();
+  try {
+    const res = await fetch(`${BASE}/api/sensors/${ticketId}`, {
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    sensorsRetryAt = 0;
+    return (await res.json()) as SensorPayload;
+  } catch (err) {
+    sensorsRetryAt = Date.now() + SENSOR_BACKOFF_MS;
+    if (!sensorsWarned) {
+      sensorsWarned = true;
+      console.warn('[jenga] sensor telemetry unavailable; strip will stay empty.', err);
+    }
+    return fx.sensors();
+  }
+}
+
+/** Demo control: drop a ticket into a cold snap, or bring it back. */
+export function setSensorScenario(
+  ticketId: string,
+  mode: SensorMode,
+): Promise<SensorScenario> {
+  return call<SensorScenario>(
+    `/api/sensors/scenario/${ticketId}`,
+    { method: 'POST', body: JSON.stringify({ mode }) },
+    () => ({ ticket_id: ticketId, mode }),
   );
 }
 

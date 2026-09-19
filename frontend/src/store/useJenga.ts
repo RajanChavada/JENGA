@@ -8,6 +8,7 @@ import type {
   GraphEdge,
   HotzoneResponse,
   PurchaseOrder,
+  SensorPayload,
   Task,
   TaskState,
   Verdict,
@@ -68,6 +69,8 @@ interface JengaState {
   purchaseOrders: PurchaseOrder[];
   hotzones: HotzoneResponse | null;
   sideEffect: string | null;
+  /** Curing telemetry, keyed by ticket. Written by the poll in <SensorStrip>. */
+  sensors: Record<string, SensorPayload>;
 
   loading: boolean;
   busy: boolean;
@@ -81,6 +84,7 @@ interface JengaState {
   selectTask: (id: string | null) => void;
   selectZone: (z: Zone | null) => void;
   clearVerdict: () => void;
+  loadSensors: (id: string) => Promise<void>;
   submit: (submissionId: string) => Promise<void>;
   submitText: (taskId: string, text: string, filename: string) => Promise<void>;
   runDispute: (taskId: string, delayDays: number, reason: string) => Promise<void>;
@@ -105,6 +109,7 @@ export const useJenga = create<JengaState>((set, get) => ({
   purchaseOrders: [],
   hotzones: null,
   sideEffect: null,
+  sensors: {},
 
   loading: true,
   busy: false,
@@ -136,7 +141,13 @@ export const useJenga = create<JengaState>((set, get) => ({
   },
 
   async reset() {
-    set({ verdict: null, attributions: [], sideEffect: null, selectedTaskId: null });
+    set({
+      verdict: null,
+      attributions: [],
+      sideEffect: null,
+      selectedTaskId: null,
+      sensors: {},
+    });
     await get().load();
   },
 
@@ -145,6 +156,16 @@ export const useJenga = create<JengaState>((set, get) => ({
   selectTask: (selectedTaskId) => set({ selectedTaskId }),
   selectZone: (selectedZone) => set({ selectedZone }),
   clearVerdict: () => set({ verdict: null, sideEffect: null }),
+
+  /**
+   * One poll's worth of telemetry. Merged per ticket rather than replacing the
+   * map, so switching selection back and forth keeps the previous sparkline on
+   * screen instead of blanking it for one tick.
+   */
+  async loadSensors(id) {
+    const payload = await api.fetchSensors(id);
+    set((s) => ({ sensors: { ...s.sensors, [id]: payload } }));
+  },
 
   async submit(submissionId) {
     const sub = fx.SUBMISSIONS.find((s) => s.id === submissionId);
