@@ -1,0 +1,249 @@
+import seed from '../../../data/seed_tasks.json';
+import evidence from '../../../data/mock_evidence.json';
+import { computeCpm } from './cpm';
+import type {
+  AttributionEntry,
+  DisputeResponse,
+  GraphEdge,
+  GraphResponse,
+  PurchaseOrder,
+  Submission,
+  Task,
+  TaskState,
+  Verdict,
+  VerdictStatus,
+  Zone,
+} from './types';
+
+/**
+ * Offline mirror of the backend. Everything the demo needs runs from here with
+ * the API completely down: CPM, the five canned verdicts, the dispute cascade,
+ * and the attribution ledger.
+ */
+
+const EDGES: GraphEdge[] = seed.edges as GraphEdge[];
+type SeedTask = (typeof seed.tasks)[number];
+
+/** A Zip purchase-order adjustment triggered by a material shortage in a report. */
+export interface ZipAction {
+  po_id: string;
+  action: string;
+  new_delivery_date: string;
+  reason: string;
+}
+
+interface Expected {
+  status: VerdictStatus;
+  confidence: number;
+  gptzero: { ai_probability: number; flagged: boolean };
+  vision: { observation: string; matches_claim: boolean | null };
+  reasoning: string;
+  actionable_request: string | null;
+  side_effect?: string;
+  zip_action?: ZipAction;
+}
+
+type RawSubmission = Submission & { expected: Expected };
+
+const RAW = evidence.submissions as unknown as RawSubmission[];
+
+export const SUBMISSIONS: Submission[] = RAW.map(
+  ({ id, beat, label, task_id, report_text, image, transcript }) => ({
+    id,
+    beat,
+    label,
+    task_id,
+    report_text,
+    image,
+    transcript,
+  }),
+);
+
+/**
+ * Vision's own confidence per canned submission. These numbers carry the demo's
+ * whole point: SUB-02's vision is *confident* the photo contradicts the claim,
+ * while SUB-03's vision is *not confident of anything* — which is precisely why
+ * it returns matches_claim: null rather than false.
+ * ponytail: lives here because mock_evidence.json predates vision.confidence and
+ * the data agent owns that file. Delete once the fixture ships the field.
+ */
+const VISION_CONFIDENCE: Record<string, number> = {
+  'SUB-01': 0.93,
+  'SUB-02': 0.87,
+  'SUB-03': 0.18,
+  'SUB-04': 0.9,
+  'SUB-05': 0.86,
+};
+
+function withCpm(tasks: SeedTask[]): Task[] {
+  return computeCpm(tasks, EDGES).tasks.map(
+    (t) => ({ ...t, zone: t.zone as Zone, state: t.state as TaskState }) as Task,
+  );
+}
+
+export function graph(): GraphResponse {
+  const tasks = withCpm(seed.tasks as SeedTask[]);
+  const { critical_path, project_duration } = computeCpm(tasks, EDGES);
+  return { tasks, edges: EDGES, critical_path, project_duration };
+}
+
+export function purchaseOrders(): PurchaseOrder[] {
+  return (seed.purchase_orders ?? []) as PurchaseOrder[];
+}
+
+/** The historical-evidence column the contract requires but the fixture lacks. */
+function historicalFor(task: Task | undefined): string {
+  if (!task) return 'No prior schedule history on record for this activity.';
+  const float =
+    task.total_float === 0
+      ? 'on the critical path with zero float'
+      : `carrying ${task.total_float} day${task.total_float === 1 ? '' : 's'} of total float`;
+  return `${task.id} scheduled day ${task.es}–${task.ef} (${task.duration_days}d), ${float}. Logged state at submission: ${task.state}. ${task.depends_on.length ? `Predecessors ${task.depends_on.join(', ')} closed out prior.` : 'No predecessor activities.'}`;
+}
+
+/** Maps a submission's `expected` block onto the contract's Verdict shape. */
+export function verdictFor(submissionId: string, tasks?: Task[]): Verdict {
+  const sub = RAW.find((s) => s.id === submissionId);
+  if (!sub) throw new Error(`Unknown submission ${submissionId}`);
+  const e = sub.expected;
+  const seedTask = (seed.tasks as SeedTask[]).find((t) => t.id === sub.task_id);
+  const liveTask = tasks?.find((t) => t.id === sub.task_id);
+
+  return {
+    task_id: sub.task_id,
+    status: e.status,
+    confidence: e.confidence,
+    reasoning: e.reasoning,
+    actionable_request: e.actionable_request ?? null,
+    gptzero: { ...e.gptzero },
+    vision: {
+      observation: e.vision.observation,
+      matches_claim: e.vision.matches_claim,
+      confidence: VISION_CONFIDENCE[sub.id] ?? 0.5,
+    },
+    evidence: {
+      spec: seedTask?.spec_text ?? '',
+      claim: sub.report_text ?? sub.transcript ?? '(no written claim submitted)',
+      visual: e.vision.observation,
+      historical: historicalFor(liveTask),
+    },
+  };
+}
+
+/** Procurement fallout the agent noticed in the report text, if any. */
+export function sideEffectFor(submissionId: string): string | null {
+  return RAW.find((s) => s.id === submissionId)?.expected.side_effect ?? null;
+}
+
+/**
+ * The Zip purchase-order action a submission triggers, if any. Mirrors the
+ * backend's `detect_material_shortage` so the procurement panel updates whether
+ * we are hitting the API or running on fixtures.
+ */
+export function zipActionFor(submissionId: string): ZipAction | null {
+  const raw = RAW.find((s) => s.id === submissionId)?.expected.zip_action;
+  return raw ?? null;
+}
+
+/** The task state a verdict drives its node into. */
+export function stateForVerdict(status: VerdictStatus): TaskState {
+  return status === 'APPROVED'
+    ? 'verified'
+    : status === 'DISPUTED'
+      ? 'disputed'
+      : 'under_review';
+}
+
+/**
+ * Re-run CPM with the disputed task stretched by `delay_days`, then diff against
+ * the pre-dispute schedule to find who moved and by how much.
+ */
+export function dispute(
+  current: Task[],
+  taskId: string,
+  delayDays: number,
+): DisputeResponse {
+  const before = new Map(current.map((t) => [t.id, t]));
+  const stretched = current.map((t) =>
+    t.id === taskId
+      ? { ...t, duration_days: t.duration_days + delayDays }
+      : { ...t },
+  );
+  const beforeDuration = Math.max(...current.map((t) => t.ef));
+  const { tasks, critical_path, project_duration } = computeCpm(
+    stretched,
+    EDGES,
+  );
+
+  const next = tasks.map(
+    (t) =>
+      ({
+        ...t,
+        zone: t.zone as Zone,
+        state: (t.id === taskId
+          ? 'disputed'
+          : before.get(t.id)!.state) as TaskState,
+      }) as Task,
+  );
+
+  const downstream = next
+    .filter((t) => t.id !== taskId && t.es !== before.get(t.id)!.es)
+    .map((t) => t.id);
+
+  const projectSlipped = project_duration - beforeDuration;
+  const floatConsumed = Math.min(
+    before.get(taskId)?.total_float ?? 0,
+    delayDays,
+  );
+
+  return {
+    tasks: next,
+    critical_path,
+    project_slipped_days: projectSlipped,
+    attribution: attributionFor(
+      taskId,
+      delayDays,
+      floatConsumed,
+      downstream,
+      projectSlipped,
+    ),
+  };
+}
+
+function attributionFor(
+  taskId: string,
+  slipDays: number,
+  floatConsumed: number,
+  downstream: string[],
+  projectSlipped: number,
+): AttributionEntry {
+  const canned = CASCADE_DEMO;
+  const split =
+    canned?.task_id === taskId && canned.expected_attribution?.attribution
+      ? canned.expected_attribution.attribution
+      : [
+          {
+            party: 'Contractor',
+            days: slipDays,
+            reason: 'Unverified work claim on a scheduled activity',
+          },
+        ];
+
+  return {
+    id: `ATT-${taskId}-${Date.now().toString(36)}`,
+    task_id: taskId,
+    slip_days: slipDays,
+    float_consumed: floatConsumed,
+    downstream_affected: downstream,
+    project_slipped_days: projectSlipped,
+    attribution: split,
+    created_at: new Date().toISOString(),
+  };
+}
+
+export const CASCADE_DEMO = evidence.cascade_demo as unknown as {
+  task_id: string;
+  delay_days: number;
+  reason: string;
+  expected_attribution?: { attribution?: AttributionEntry['attribution'] };
+};
