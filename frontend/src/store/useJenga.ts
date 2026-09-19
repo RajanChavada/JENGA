@@ -2,16 +2,20 @@
 
 import { create } from 'zustand';
 import * as api from '@/lib/api';
-import * as fx from '@/lib/fixtures';
 import type {
   AttributionEntry,
   GraphEdge,
   HotzoneResponse,
+  PortalOverview,
+  PortalProject,
   PurchaseOrder,
+  QueueItem,
+  Report,
+  Role,
   SensorPayload,
   Task,
   TaskState,
-  Verdict,
+  Verdict, 
   Zone,
 } from '@/lib/types';
 
@@ -21,6 +25,8 @@ export const CASCADE_STEP_MS = 120;
 /** The one site JENGA ships onboarded. Mirrors `db.DEFAULT_PROJECT_ID`. */
 export const DEFAULT_PROJECT_ID = 'eglinton-west-station';
 const DEFAULT_SITE_NAME = 'Eglinton West Station';
+
+const IDENTITY_KEY = 'jenga.identity';
 
 export type ViewMode = 'blueprint' | 'logical';
 
@@ -56,6 +62,38 @@ function recordStages(
   return next;
 }
 
+function persistIdentity(s: { role: Role; ownerId: string; companyId: string }) {
+  try {
+    localStorage.setItem(
+      IDENTITY_KEY,
+      JSON.stringify({ role: s.role, ownerId: s.ownerId, companyId: s.companyId }),
+    );
+  } catch {
+    /* private window or blocked storage: the switcher still works for the session */
+  }
+}
+
+/**
+ * Re-read the active project's tasks and submissions without the loading flash
+ * `load` causes. Ignored if the site changed while the request was in flight.
+ */
+async function refreshSite(projectId: string) {
+  const { role } = useJenga.getState();
+  const [g, reports] = await Promise.all([
+    api.fetchGraph(projectId),
+    api.fetchReports(projectId, role === 'contractor' ? 'contractor' : 'owner'),
+  ]);
+  if (useJenga.getState().activeProjectId !== projectId) return;
+  useJenga.setState((s) => ({
+    tasks: g.tasks,
+    edges: g.edges,
+    criticalPath: g.critical_path,
+    projectDuration: g.project_duration,
+    reports,
+    stageHistory: recordStages(s.stageHistory, g.tasks),
+  }));
+}
+
 interface JengaState {
   /**
    * The project whose graph is on screen, or null for a hotzone JENGA has no
@@ -88,6 +126,19 @@ interface JengaState {
   /** Curing telemetry, keyed by ticket. Written by the poll in <SensorStrip>. */
   sensors: Record<string, SensorPayload>;
 
+  /**
+   * Who is looking. A demo role switcher, not authentication: the API scopes by
+   * the ids it is given and the UI filters by these. See CONTRACT.md.
+   */
+  role: Role;
+  ownerId: string;
+  companyId: string;
+  portal: PortalOverview | null;
+  /** The active project's submissions. The contractor's copy carries no verdicts. */
+  reports: Report[];
+  /** Updates awaiting the current owner's decision, across their projects. */
+  queue: QueueItem[];
+
   loading: boolean;
   busy: boolean;
   cascading: boolean;
@@ -104,8 +155,15 @@ interface JengaState {
   selectZone: (z: Zone | null) => void;
   clearVerdict: () => void;
   loadSensors: (id: string) => Promise<void>;
-  submit: (submissionId: string) => Promise<void>;
-  submitText: (taskId: string, text: string, filename: string) => Promise<void>;
+  restoreIdentity: () => void;
+  setRole: (role: Role) => Promise<void>;
+  setOwner: (id: string) => Promise<void>;
+  setCompany: (id: string) => Promise<void>;
+  refreshPortal: () => Promise<void>;
+  focusProject: (project: PortalProject) => Promise<void>;
+  /** Each returns the refusal message, or null on success. */
+  submitUpdate: (taskId: string, text: string, imageBase64: string | null) => Promise<string | null>;
+  decide: (reportId: string, decision: 'approve' | 'deny', note: string) => Promise<string | null>;
   runDispute: (taskId: string, delayDays: number, reason: string) => Promise<void>;
 }
 
@@ -150,6 +208,13 @@ export const useJenga = create<JengaState>((set, get) => ({
   strict: true,
 
   hotzones: null,
+
+  role: 'owner',
+  ownerId: 'halton-transit',
+  companyId: 'ellis-civil',
+  portal: null,
+  reports: [],
+  queue: [],
 
   loading: true,
   offline: false,
@@ -259,82 +324,113 @@ export const useJenga = create<JengaState>((set, get) => ({
     set((s) => ({ sensors: { ...s.sensors, [id]: payload } }));
   },
 
-  async submit(submissionId) {
-    const sub = fx.SUBMISSIONS.find((s) => s.id === submissionId);
-    if (!sub) return;
-    const site = get().activeProjectId;
-    set({ busy: true, verdict: null, sideEffect: null });
-
-    const verdict = await api.verify(sub.task_id, submissionId, get().tasks, get().strict);
-    // Verification takes seconds; the presenter can be on another site by the
-    // time it answers. That verdict is about the site it was submitted from.
-    // The switch already cleared `busy`, so there is nothing to unwind.
-    if (get().activeProjectId !== site) return;
-    const nextState = fx.stateForVerdict(verdict.status);
-
-    set((s) => {
-      const tasks = s.tasks.map((t) =>
-        t.id === sub.task_id ? { ...t, state: nextState } : t,
-      );
-      return {
-        verdict,
-        busy: false,
-        sideEffect: fx.sideEffectFor(submissionId),
-        selectedTaskId: sub.task_id,
-        offline: api.isOffline(),
-        tasks,
-        stageHistory: recordStages(s.stageHistory, tasks),
-      };
-    });
-
-    // A shortage in the report reschedules its linked PO. Mirrors the backend's
-    // Zip mock so the panel is right whether we are live or on fixtures.
-    const zip = fx.zipActionFor(submissionId);
-    if (zip) {
-      set((s) => ({
-        purchaseOrders: s.purchaseOrders.map((po) =>
-          po.id === zip.po_id
-            ? {
-                ...po,
-                status: 'rescheduled',
-                delivery_date: zip.new_delivery_date,
-                last_action: zip.reason,
-              }
-            : po,
-        ),
-      }));
+  /** Read the saved identity after hydration; reading it at module init would mismatch the server HTML. */
+  restoreIdentity() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(IDENTITY_KEY) ?? 'null');
+      if (saved && (saved.role === 'owner' || saved.role === 'contractor')) {
+        set({
+          role: saved.role,
+          ownerId: saved.ownerId ?? get().ownerId,
+          companyId: saved.companyId ?? get().companyId,
+        });
+      }
+    } catch {
+      /* private window or blocked storage: the defaults are fine */
     }
   },
 
+  async setRole(role) {
+    set({ role });
+    persistIdentity(get());
+    await get().refreshPortal();
+  },
+  async setOwner(ownerId) {
+    set({ ownerId });
+    persistIdentity(get());
+    await get().refreshPortal();
+  },
+  async setCompany(companyId) {
+    set({ companyId });
+    persistIdentity(get());
+    await get().refreshPortal();
+  },
+
   /**
-   * Same verification path as `submit`, but the claim text came from a document
-   * the user uploaded rather than one of the canned submissions. No side-effect
-   * lookup: there is no fixture entry to read procurement fallout from.
+   * Reload everything the current identity can see, and put the graph on one of
+   * its projects if the one on screen belongs to someone else. A site the portal
+   * does not know (a hotzone with no project) is left alone.
    */
-  async submitText(taskId, text, filename) {
-    const site = get().activeProjectId;
-    set({ busy: true, verdict: null, sideEffect: null });
+  async refreshPortal() {
+    const { role, ownerId, companyId } = get();
+    const params = role === 'owner' ? { ownerId } : { companyId };
+    const [portal, queue] = await Promise.all([
+      api.fetchPortal(params),
+      role === 'owner' ? api.fetchQueue(ownerId) : Promise.resolve([] as QueueItem[]),
+    ]);
+    if (get().role !== role) return; // the switcher moved again while this was in flight
+    set({ portal, queue, offline: api.isOffline() });
 
-    const verdict = await api.verifyWithText(taskId, text, get().tasks, get().strict);
-    if (get().activeProjectId !== site) return; // see `submit`
-    const nextState = fx.stateForVerdict(verdict.status);
+    const active = get().activeProjectId;
+    const mine = portal.projects.some((p) => p.id === active);
+    if (!mine && portal.projects.length > 0 && (role === 'contractor' || active !== null)) {
+      await get().focusProject(portal.projects[0]);
+    } else if (active && mine) {
+      await refreshSite(active);
+    }
+  },
 
-    set((s) => {
-      const tasks = s.tasks.map((t) =>
-        t.id === taskId ? { ...t, state: nextState } : t,
-      );
-      return {
-        verdict: {
-          ...verdict,
-          evidence: { ...verdict.evidence, claim: `${filename} — ${verdict.evidence.claim}` },
-        },
-        busy: false,
-        selectedTaskId: taskId,
-        offline: api.isOffline(),
-        tasks,
-        stageHistory: recordStages(s.stageHistory, tasks),
-      };
+  async focusProject(project) {
+    set({
+      ...EMPTY_SITE,
+      reports: [],
+      view: 'micro',
+      activeProjectId: project.id,
+      activeSiteName: project.name,
+      loading: true,
     });
+    await get().load(project.id);
+    await refreshSite(project.id);
+  },
+
+  async submitUpdate(taskId, text, imageBase64) {
+    const site = get().activeProjectId;
+    if (!site) return 'No project selected.';
+    set({ busy: true });
+    try {
+      await api.submitReport(site, taskId, text, imageBase64, get().tasks, get().strict);
+    } catch (err) {
+      set({ busy: false });
+      return err instanceof Error ? err.message : 'Submission failed.';
+    }
+    set({ busy: false, offline: api.isOffline() });
+    if (get().activeProjectId === site) await refreshSite(site);
+    const { role, ownerId, companyId } = get();
+    set({ portal: await api.fetchPortal(role === 'owner' ? { ownerId } : { companyId }) });
+    return null;
+  },
+
+  async decide(reportId, decision, note) {
+    let res;
+    try {
+      res = await api.decideReport(reportId, decision, note);
+    } catch (err) {
+      return err instanceof Error ? err.message : 'Decision failed.';
+    }
+    if (get().activeProjectId === res.report.project_id) {
+      set((s) => ({
+        tasks: res.tasks,
+        stageHistory: recordStages(s.stageHistory, res.tasks),
+      }));
+    }
+    const { ownerId } = get();
+    const [queue, portal] = await Promise.all([
+      api.fetchQueue(ownerId),
+      api.fetchPortal({ ownerId }),
+    ]);
+    set({ queue, portal, offline: api.isOffline() });
+    if (get().activeProjectId) await refreshSite(get().activeProjectId!);
+    return null;
   },
 
   async runDispute(taskId, delayDays, reason) {

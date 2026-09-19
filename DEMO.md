@@ -11,6 +11,11 @@ export JENGA_STORAGE=memory     # no database needed
 curl -X POST localhost:8000/api/reset
 ```
 
+Updates are now submitted by the **contractor**, and the owner decides. Header switcher:
+**Owner: Halton Transit Authority** for the story, **Contractor: Ellis Civil Contracting**
+for the submissions. The report text for each canned beat is in `data/mock_evidence.json`
+(`SUB-02`, `SUB-03`); paste it into the contractor form.
+
 Open the macro view first, then drill into the blueprint view. Keep 3D visible if the
 screen is wide enough. **Do not** rely on
 conference wifi. `JENGA_OFFLINE=1` is the default demo posture — turn it off only if the
@@ -51,7 +56,9 @@ Point at the bottom timeline:
 > "The schedule below is per ticket: baseline underneath, current plan on top, float tail,
 > and stage ticks showing every state transition this package has passed through."
 
-**[0:35] Submit a contractor's daily report** — pick `SUB-02` (P-106, South Platform Pour)
+**[0:35] Submit a contractor's daily report** — switch to **Contractor**, open Eglinton West
+Station, **Submit update** on P-106 (South Platform Pour) with `SUB-02`'s text, then switch back
+to **Owner** and open **Reviews**. The AI verdict is a recommendation; the owner decides.
 
 **[0:40] GPTZero gate fires** — *technical complexity*
 
@@ -65,7 +72,7 @@ Node goes **amber**, not green.
 
 Report implies a completed milestone. Photo shows ~40% poured, rebar still exposed. → **DISPUTED**
 
-**[0:58] ★ THE PEAK — submit `SUB-03` (P-107, North Platform Rebar)** — *WOW factor*
+**[0:58] ★ THE PEAK — contractor submits `SUB-03` on P-107 (North Platform Rebar)** — *WOW factor*
 
 Report is human. Plausible. But the drone photo is shadow-occluded.
 
@@ -101,9 +108,17 @@ their stage ticks update as the package goes under review.
 
 **[1:30] Optional upload beat**
 
-Open **Submit daily update → Upload document** and drop a TXT/PDF/DOCX if asked about ingestion.
-Daily report uploads run directly through the arbiter; spec uploads produce proposed packages
-without mutating the schedule.
+In the contractor form, drop a TXT/PDF/DOCX under **Add site photo / document** if asked about
+ingestion; the extracted text fills the report. Spec uploads (onboarding) still produce proposed
+packages without mutating the schedule.
+
+**Optional approval beat.** As owner, **Deny** an update (a note is required): the task returns
+to *active* and the contractor sees the reason. **Approve** it: the task turns verified and any
+successor whose predecessors are all verified unlocks. Before denying, the review card shows **If you deny**: the rework days
+(from the AI's finding), the new project finish against the deadline, and which downstream tasks
+move and go late. Deny a **critical-path** task (P-104) and the project breaches its deadline;
+deny a task with float (P-114) and the slip is absorbed. The contractor sees the days and new
+finish date. Successors of unapproved work stay *blocked*. Approving something the AI did not approve needs a note and is recorded as an override.
 
 **[1:36] Close**
 

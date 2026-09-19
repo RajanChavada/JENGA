@@ -36,7 +36,7 @@ TO_MAIN = {"pending": "blocked", "active": "in_progress", "verified": "done",
 FROM_MAIN = {"blocked": "pending", "ready": "pending", "in_progress": "active", "done": "verified",
              "cancelled": "blocked", "under_review": "under_review", "disputed": "disputed"}
 
-TASK_KEYS = ("id", "name", "zone", "x", "y", "duration_days", "state", "spec_text")
+TASK_KEYS = ("id", "name", "zone", "x", "y", "duration_days", "due_day", "state", "spec_text")
 PO_KEYS = ("id", "material", "quantity", "vendor", "delivery_date", "status",
            "linked_task", "last_action")
 
@@ -86,7 +86,7 @@ def _define_models():
 
     Only the columns this app touches are mapped; the rest keep their defaults.
     """
-    from sqlalchemy import Date, DateTime, Float, Integer, String, Text
+    from sqlalchemy import Boolean, Date, DateTime, Float, Integer, String, Text
     from sqlalchemy.dialects.postgresql import JSONB
     from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -115,6 +115,7 @@ def _define_models():
         blueprint_x: Mapped[float | None] = mapped_column(Float, nullable=True)
         blueprint_y: Mapped[float | None] = mapped_column(Float, nullable=True)
         duration_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+        due_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
         spec_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     class DependencyRow(Base):
@@ -131,11 +132,14 @@ def _define_models():
         submitted_by_role: Mapped[str] = mapped_column(String)
         report_text: Mapped[str] = mapped_column(Text)
         media_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-        # add_evidence writes the three below; decided_at is nobody's job yet
+        # add_evidence writes the three below; decide_report sets the decision
         gptzero_score: Mapped[float | None] = mapped_column(Float, nullable=True)
         gptzero_flag: Mapped[str | None] = mapped_column(String, nullable=True)
         owner_decision: Mapped[str | None] = mapped_column(String, nullable=True)
         decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+        owner_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+        impact: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+        ai_override: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
         submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     class EvidenceVerdictRow(Base):
@@ -230,6 +234,7 @@ def _ticket_in(row, project_id):
         "blueprint_x": row.get("x"),
         "blueprint_y": row.get("y"),
         "duration_days": row.get("duration_days"),
+        "due_day": row.get("due_day"),
         "status": TO_MAIN.get(row.get("state"), row.get("state")),
         "spec_text": row.get("spec_text"),
     }
@@ -243,6 +248,7 @@ def _ticket_out(r):
         "x": r.blueprint_x,
         "y": r.blueprint_y,
         "duration_days": r.duration_days,
+        "due_day": r.due_day,
         "state": FROM_MAIN.get(r.status, r.status),
         "spec_text": r.spec_text,
     }
@@ -340,8 +346,9 @@ async def init():
 async def reset(seed, project_id=DEFAULT_PROJECT_ID):
     """Wipe and load a seed payload: {tasks, edges, purchase_orders}."""
     if STORAGE == "memory":
+        # Scoped like the postgres branch: another project's rows survive.
         for k in _mem:
-            _mem[k].clear()
+            _mem[k][:] = [r for r in _mem[k] if not _scoped(r, project_id)]
     else:
         from sqlalchemy import delete, or_, select
 
@@ -367,7 +374,9 @@ async def reset(seed, project_id=DEFAULT_PROJECT_ID):
             await s.execute(delete(T).where(T.project_id == project_id))
 
             # projects/branches are upserted, not wiped
-            name = DEFAULT_PROJECT_NAME if project_id == DEFAULT_PROJECT_ID else project_id
+            name = seed.get("project_name") or (
+                DEFAULT_PROJECT_NAME if project_id == DEFAULT_PROJECT_ID else project_id
+            )
             await s.merge(_models["projects"](id=project_id, name=name))
             # No model declares a real ForeignKey, so the unit of work has no
             # table-dependency graph: branches only lands after projects if we
@@ -484,17 +493,20 @@ async def update_task(task_id, **fields):
 
 
 async def add_evidence(row):
-    """One submission -> a reports row plus its evidence_verdicts row."""
+    """One submission -> a reports row plus its evidence_verdicts row. Returns the report id."""
     if STORAGE == "memory":
-        _mem["evidence"].append(dict(row))
-        return
+        report_id = _uid()
+        _mem["evidence"].append(
+            {"id": report_id, "project_id": DEFAULT_PROJECT_ID, **dict(row)}
+        )
+        return report_id
     async with _Session() as s:
         report_id = _uid()
         s.add(
             _models["reports"](
                 id=report_id,
                 ticket_id=row["task_id"],
-                submitted_by_role="subcontractor",
+                submitted_by_role="contractor",
                 report_text=row.get("report_text") or "",
                 # bare .get: a report GPTZero never scored stores NULL, which is
                 # not the same fact as a confident 0.0. decided_at stays unset.
@@ -516,6 +528,103 @@ async def add_evidence(row):
             )
         )
         await s.commit()
+        return report_id
+
+
+def _report_shape(r):
+    """Public shape of a report; the image payload stays server-side."""
+    return {
+        "id": r["id"],
+        "task_id": r["task_id"],
+        "project_id": r["project_id"],
+        "report_text": r.get("report_text") or "",
+        "verdict": r.get("verdict"),
+        "owner_decision": r.get("owner_decision") or "pending",
+        "owner_note": r.get("owner_note"),
+        "ai_override": bool(r.get("ai_override")),
+        "impact": r.get("impact"),
+        "submitted_at": _iso(r.get("created_at")),
+        "decided_at": _iso(r.get("decided_at")),
+    }
+
+
+async def reports(project_id=DEFAULT_PROJECT_ID):
+    """Every submission for a project, oldest first."""
+    if STORAGE == "memory":
+        return [_report_shape(r) for r in _mem["evidence"] if _scoped(r, project_id)]
+    from sqlalchemy import select
+
+    R, V, T = _models["reports"], _models["evidence_verdicts"], _models["tasks"]
+    async with _Session() as s:
+        rows = (
+            await s.execute(
+                select(R, V.verdict, T.project_id)
+                .join(T, T.id == R.ticket_id)
+                .outerjoin(V, V.report_id == R.id)
+                .where(T.project_id == project_id)
+                .order_by(R.submitted_at)
+            )
+        ).all()
+        return [
+            _report_shape(
+                {
+                    "id": r.id,
+                    "task_id": r.ticket_id,
+                    "project_id": pid,
+                    "report_text": r.report_text,
+                    "verdict": verdict,
+                    "owner_decision": r.owner_decision,
+                    "owner_note": r.owner_note,
+                    "ai_override": r.ai_override,
+                    "impact": r.impact,
+                    "created_at": r.submitted_at,
+                    "decided_at": r.decided_at,
+                }
+            )
+            for r, verdict, pid in rows
+        ]
+
+
+async def decide_report(report_id, decision, note, ai_override, impact=None):
+    """Record the owner's call on one report. Returns the report, or None if unknown."""
+    now = datetime.now(timezone.utc)
+    if STORAGE == "memory":
+        for r in _mem["evidence"]:
+            if r["id"] == report_id:
+                r.update(
+                    owner_decision=decision,
+                    owner_note=note,
+                    ai_override=ai_override,
+                    impact=impact,
+                    decided_at=now.isoformat(),
+                )
+                return _report_shape(r)
+        return None
+    async with _Session() as s:
+        row = await s.get(_models["reports"], report_id)
+        if row is None:
+            return None
+        row.owner_decision = decision
+        row.owner_note = note
+        row.ai_override = ai_override
+        row.impact = impact
+        row.decided_at = now.replace(tzinfo=None)
+        await s.commit()
+    return next((r for r in await reports_all(report_id) if r["id"] == report_id), None)
+
+
+async def reports_all(report_id):
+    """The project's reports, found via one report id (postgres helper)."""
+    from sqlalchemy import select
+
+    R, T = _models["reports"], _models["tasks"]
+    async with _Session() as s:
+        pid = (
+            await s.execute(
+                select(T.project_id).join(R, R.ticket_id == T.id).where(R.id == report_id)
+            )
+        ).scalar_one_or_none()
+    return await reports(pid) if pid else []
 
 
 async def attributions(project_id=DEFAULT_PROJECT_ID):

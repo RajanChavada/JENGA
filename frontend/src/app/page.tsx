@@ -7,7 +7,9 @@ import { WorkGraph } from '@/components/WorkGraph';
 import { Timeline } from '@/components/Timeline';
 import { VerdictPanel, AgentRunning } from '@/components/VerdictPanel';
 import { AttributionLedger } from '@/components/AttributionLedger';
-import { SubmitUpdateModal } from '@/components/SubmitUpdateModal';
+import { ApprovalQueue } from '@/components/ApprovalQueue';
+import { ContractorPortal } from '@/components/ContractorPortal';
+import { RoleSwitcher } from '@/components/RoleSwitcher';
 import { MacroHeatmap } from '@/components/MacroHeatmap';
 import { SensorStrip } from '@/components/SensorStrip';
 import { DocumentUpload } from '@/components/DocumentUpload';
@@ -30,7 +32,11 @@ export default function Home() {
   const view = useJenga((s) => s.view);
   const setView = useJenga((s) => s.setView);
   const siteName = useJenga((s) => s.activeSiteName);
+  const role = useJenga((s) => s.role);
+  const restoreIdentity = useJenga((s) => s.restoreIdentity);
+  const refreshPortal = useJenga((s) => s.refreshPortal);
   const [show3d, setShow3d] = useState(true);
+  const isOwner = role === 'owner';
 
   // Two different questions, and they can disagree: a project that exists but
   // has no tickets yet is onboarded with nothing to draw.
@@ -44,8 +50,10 @@ export default function Home() {
   const hasGraph = useJenga((s) => s.tasks.length > 0);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    restoreIdentity();
+    // The graph first (the map and graph views paint from it), then whoever is looking.
+    void load().then(() => refreshPortal());
+  }, [load, restoreIdentity, refreshPortal]);
 
   return (
     <main className="flex h-screen flex-col overflow-hidden bg-white text-slate-900">
@@ -67,64 +75,70 @@ export default function Home() {
         </div>
 
         <div className="flex items-center gap-2">
-          <div className="flex overflow-hidden rounded-md border border-slate-200 text-xs">
-            {(['macro', 'micro'] as const).map((v) => (
+          <RoleSwitcher />
+          {isOwner && (
+            <>
+              <div className="flex overflow-hidden rounded-md border border-slate-200 text-xs">
+                {(['macro', 'micro'] as const).map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setView(v)}
+                    className={`px-2.5 py-1.5 capitalize transition-colors ${
+                      view === v
+                        ? 'bg-slate-900 text-white'
+                        : 'bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-900'
+                    }`}
+                  >
+                    {v}
+                  </button>
+                ))}
+              </div>
               <button
-                key={v}
-                onClick={() => setView(v)}
-                className={`px-2.5 py-1.5 capitalize transition-colors ${
-                  view === v
-                    ? 'bg-slate-900 text-white'
-                    : 'bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-900'
+                onClick={() => setShow3d((v) => !v)}
+                disabled={view === 'macro' || !onboarded}
+                className="rounded-md border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-40"
+              >
+                {show3d ? 'Hide 3D' : 'Show 3D'}
+              </button>
+              <button
+                onClick={() => void reset()}
+                // There is no graph to put back on a site with no project behind
+                // it, and the store refuses the reload rather than pulling the
+                // default project's tasks onto someone else's pin. Say so here
+                // instead of leaving a button that looks live and does nothing.
+                disabled={!onboarded}
+                title={onboarded ? undefined : 'Nothing to reset — this site has no schedule yet'}
+                className="rounded-md border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-40"
+              >
+                Reset
+              </button>
+              <button
+                onClick={() => setStrict(!strict)}
+                aria-pressed={strict}
+                title="Hard-gate AI-written reports (Rox) / advisory only (main)"
+                className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs transition-colors ${
+                  strict
+                    ? 'border-slate-900 bg-slate-900 text-white'
+                    : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-900'
                 }`}
               >
-                {v}
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${strict ? 'bg-emerald-400' : 'bg-slate-300'}`}
+                />
+                Strict
               </button>
-            ))}
-          </div>
-          <button
-            onClick={() => setShow3d((v) => !v)}
-            disabled={view === 'macro' || !onboarded}
-            className="rounded-md border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-40"
-          >
-            {show3d ? 'Hide 3D' : 'Show 3D'}
-          </button>
-          <button
-            onClick={() => void reset()}
-            // There is no graph to put back on a site with no project behind
-            // it, and the store refuses the reload rather than pulling the
-            // default project's tasks onto someone else's pin. Say so here
-            // instead of leaving a button that looks live and does nothing.
-            disabled={!onboarded}
-            title={onboarded ? undefined : 'Nothing to reset — this site has no schedule yet'}
-            className="rounded-md border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-40"
-          >
-            Reset
-          </button>
-          <button
-            onClick={() => setStrict(!strict)}
-            aria-pressed={strict}
-            title="Hard-gate AI-written reports (Rox) / advisory only (main)"
-            className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs transition-colors ${
-              strict
-                ? 'border-slate-900 bg-slate-900 text-white'
-                : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-900'
-            }`}
-          >
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${strict ? 'bg-emerald-400' : 'bg-slate-300'}`}
-            />
-            Strict
-          </button>
-          {/* No graph, nothing to submit against — and a submission here would
-              404 on the backend and retire the session to fixtures. */}
-          {hasGraph && <SubmitUpdateModal />}
+              {/* Contractors submit from their own portal; the owner reviews here. */}
+              <ApprovalQueue />
+            </>
+          )}
         </div>
       </header>
 
       <div className="flex min-h-0 flex-1">
         <div className="relative min-w-0 flex-1">
-          {loading ? (
+          {!isOwner ? (
+            <ContractorPortal />
+          ) : loading ? (
             <div className="flex h-full items-center justify-center text-xs text-slate-400">
               loading graph…
             </div>
@@ -153,13 +167,13 @@ export default function Home() {
             back with no tickets, `onboarded` and `hasGraph` disagree, and
             gating these on the site would leave a digital twin and a delay
             ledger flanking a panel that says the site has no drawings. */}
-        {view === 'micro' && hasGraph && show3d && (
+        {isOwner && view === 'micro' && hasGraph && show3d && (
           <div className="h-full w-[360px] shrink-0 border-l border-slate-200">
             <StationView />
           </div>
         )}
 
-        {view === 'micro' && hasGraph && <AttributionLedger />}
+        {isOwner && view === 'micro' && hasGraph && <AttributionLedger />}
       </div>
     </main>
   );

@@ -1,0 +1,45 @@
+{
+  "owners": [
+    {
+      "id": "halton-transit",
+      "name": "Halton Transit Authority"
+    },
+    {
+      "id": "lakeshore-water",
+      "name": "Lakeshore Water Works"
+    }
+  ],
+  "companies": [
+    {
+      "id": "ellis-civil",
+      "name": "Ellis Civil Contracting"
+    },
+    {
+      "id": "northgate",
+      "name": "Northgate Builders"
+    }
+  ],
+  "projects": [
+    {
+      "id": "eglinton-west-station",
+      "name": "Eglinton West Station",
+      "owner_id": "halton-transit",
+      "contractor_id": "ellis-civil",
+      "start_date": "2026-08-03"
+    },
+    {
+      "id": "ossington-relief-tunnel",
+      "name": "Ossington Relief Tunnel",
+      "owner_id": "lakeshore-water",
+      "contractor_id": "ellis-civil",
+      "start_date": "2026-08-17"
+    },
+    {
+      "id": "finch-maintenance-yard",
+      "name": "Finch Maintenance Yard",
+      "owner_id": "halton-transit",
+      "contractor_id": "northgate",
+      "start_date": "2026-09-01"
+    }
+  ]
+}
