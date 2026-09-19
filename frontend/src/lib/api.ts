@@ -60,10 +60,11 @@ export function verify(
   taskId: string,
   submissionId: string,
   tasks: Task[],
+  strict = true,
 ): Promise<Verdict> {
   const sub = fx.SUBMISSIONS.find((s) => s.id === submissionId)!;
   return call<Verdict>(
-    `/api/tasks/${taskId}/verify`,
+    `/api/tasks/${taskId}/verify?strict=${strict}`,
     {
       method: 'POST',
       body: JSON.stringify({
@@ -149,9 +150,14 @@ export function extractTasks(file: File): Promise<ExtractedTasks> {
 }
 
 /** Verify a task against text pulled out of an uploaded document. */
-export function verifyWithText(taskId: string, reportText: string, tasks: Task[]) {
+export function verifyWithText(
+  taskId: string,
+  reportText: string,
+  tasks: Task[],
+  strict = true,
+) {
   return call<Verdict>(
-    `/api/tasks/${taskId}/verify`,
+    `/api/tasks/${taskId}/verify?strict=${strict}`,
     { method: 'POST', body: JSON.stringify({ report_text: reportText }) },
     () => fx.verdictForTask(taskId, tasks),
   );

@@ -60,6 +60,8 @@ interface JengaState {
   mode: ViewMode;
   selectedTaskId: string | null;
   selectedZone: Zone | null;
+  /** Hard-gate AI-written reports (ours) vs. record the score and move on (main's). */
+  strict: boolean;
 
   verdict: Verdict | null;
   attributions: AttributionEntry[];
@@ -75,6 +77,7 @@ interface JengaState {
   load: () => Promise<void>;
   reset: () => Promise<void>;
   setMode: (m: ViewMode) => void;
+  setStrict: (v: boolean) => void;
   selectTask: (id: string | null) => void;
   selectZone: (z: Zone | null) => void;
   clearVerdict: () => void;
@@ -95,6 +98,7 @@ export const useJenga = create<JengaState>((set, get) => ({
   mode: 'blueprint',
   selectedTaskId: null,
   selectedZone: null,
+  strict: true,
 
   verdict: null,
   attributions: [],
@@ -137,6 +141,7 @@ export const useJenga = create<JengaState>((set, get) => ({
   },
 
   setMode: (mode) => set({ mode }),
+  setStrict: (strict) => set({ strict }),
   selectTask: (selectedTaskId) => set({ selectedTaskId }),
   selectZone: (selectedZone) => set({ selectedZone }),
   clearVerdict: () => set({ verdict: null, sideEffect: null }),
@@ -146,7 +151,7 @@ export const useJenga = create<JengaState>((set, get) => ({
     if (!sub) return;
     set({ busy: true, verdict: null, sideEffect: null });
 
-    const verdict = await api.verify(sub.task_id, submissionId, get().tasks);
+    const verdict = await api.verify(sub.task_id, submissionId, get().tasks, get().strict);
     const nextState = fx.stateForVerdict(verdict.status);
 
     set((s) => {
@@ -191,7 +196,7 @@ export const useJenga = create<JengaState>((set, get) => ({
   async submitText(taskId, text, filename) {
     set({ busy: true, verdict: null, sideEffect: null });
 
-    const verdict = await api.verifyWithText(taskId, text, get().tasks);
+    const verdict = await api.verifyWithText(taskId, text, get().tasks, get().strict);
     const nextState = fx.stateForVerdict(verdict.status);
 
     set((s) => {

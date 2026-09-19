@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from agent import detect_material_shortage, verify_submission  # noqa: E402
+from agent import _decide, detect_material_shortage, verify_submission  # noqa: E402
 from integrations import DATA_DIR, OFFLINE  # noqa: E402
 from integrations.zip_api import PURCHASE_ORDERS, update_purchase_order  # noqa: E402
 
@@ -120,6 +120,63 @@ async def main() -> None:
     assert unknown["status"] == "UNDER_REVIEW", unknown["status"]
     assert unknown["confidence"] < 0.5 and "X:11" in unknown["actionable_request"]
     print("PASS  unknown task degrades to a safe review hold")
+
+    # --- Strict mode: how much authority the authorship score carries --------
+    sub2 = next(s for s in EVIDENCE["submissions"] if s["id"] == "SUB-02")
+    task2 = TASKS[sub2["task_id"]]
+    advisory = f"GPTZero advisory: {sub2['expected']['gptzero']['ai_probability']:.0%} AI"
+
+    async def run_sub2(strict: bool) -> dict:
+        return await verify_submission(
+            task=task2,
+            report_text=sub2.get("report_text"),
+            image_base64=STUB_IMAGE if sub2.get("image") else None,
+            transcript=sub2.get("transcript"),
+            strict=strict,
+        )
+
+    strict_verdict = await run_sub2(True)
+    assert strict_verdict["status"] == "UNDER_REVIEW", strict_verdict["status"]
+    assert advisory not in strict_verdict["reasoning"], "strict mode must not add the advisory"
+    print(f"PASS  SUB-02 strict  -> {strict_verdict['status']} (AI gate fired)")
+
+    # SUB-02 lenient stays UNDER_REVIEW, and that is correct: with the gate
+    # demoted, the *ambiguity* rule catches it, because P-106's photo reads at
+    # 0.22 confidence — below the 0.5 floor — so this submission cannot approve
+    # on any setting. What this case proves is that the AI gate did not fire:
+    # the advisory is appended and the authorship card is no longer a blocker.
+    # Do not "fix" it to APPROVED. No fixture pairs a flagged report with a
+    # legible photo, so lenient approval is covered by the case below instead.
+    lenient_verdict = await run_sub2(False)
+    assert lenient_verdict["status"] == "UNDER_REVIEW", lenient_verdict["status"]
+    assert advisory in lenient_verdict["reasoning"], lenient_verdict["reasoning"]
+    gate_card = next(c for c in lenient_verdict["trace"] if c["node"] == "gptzero_gate")
+    assert gate_card["signal"] == "warn" and "advisory only" in gate_card["detail"], gate_card
+    print(f"PASS  SUB-02 lenient -> {lenient_verdict['status']} via the ambiguity rule, '{advisory}'")
+
+    # Lenient approval: a flagged report with a legible photo. Assembled by hand
+    # since no fixture combines the two. P-104 also carries canned wording, so
+    # this doubles as proof the override cannot swallow the advisory.
+    approved = (
+        await _decide(
+            {
+                "task": TASKS["P-104"],
+                "gptzero": {"ai_probability": 0.93, "flagged": True},
+                "vision": {
+                    "observation": "Conduit runs are visible and follow the routing in the spec.",
+                    "matches_claim": True,
+                    "confidence": 0.9,
+                    "insufficient": False,
+                },
+                "historical": {"summary": "Two comparable packages closed on schedule."},
+                "strict": False,
+            }
+        )
+    )["verdict"]
+    assert approved["status"] == "APPROVED", approved["status"]
+    assert "GPTZero advisory: 93% AI" in approved["reasoning"], approved["reasoning"]
+    assert approved["actionable_request"] is None, approved["actionable_request"]
+    print("PASS  flagged report + legible photo, lenient -> APPROVED carrying the advisory")
 
     print("=" * 62)
     if failures:

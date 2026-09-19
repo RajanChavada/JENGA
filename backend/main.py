@@ -15,6 +15,7 @@ import db
 import documents
 import seed as seed_module
 from integrations import zip_api
+from integrations.gptzero import FLAG_THRESHOLD
 from schemas import (
     AttributionEntry,
     DisputeRequest,
@@ -43,7 +44,7 @@ try:
 except ImportError:
     AGENT_AVAILABLE = False
 
-    async def verify_submission(task, report_text=None, image_base64=None, transcript=None):
+    async def verify_submission(task, report_text=None, image_base64=None, transcript=None, strict=True):
         return _canned_verdict(task["id"])
 
     async def detect_material_shortage(text):
@@ -156,7 +157,8 @@ async def extract_tasks(file: UploadFile = File(...)):
 
 
 @app.post("/api/tasks/{task_id}/verify", response_model=Verdict)
-async def verify(task_id: str, body: VerifyRequest):
+async def verify(task_id: str, body: VerifyRequest, strict: bool = True):
+    """`?strict=false` demotes the GPTZero gate to an advisory; default is on."""
     tasks = {t["id"]: t for t in cpm_engine.compute(await _graph())["tasks"]}
     task = tasks.get(task_id)
     if task is None:
@@ -168,6 +170,7 @@ async def verify(task_id: str, body: VerifyRequest):
             report_text=body.report_text,
             image_base64=body.image_base64,
             transcript=body.transcript,
+            strict=strict,
         )
         if not verdict:
             raise ValueError("agent returned nothing")
@@ -187,10 +190,18 @@ async def verify(task_id: str, body: VerifyRequest):
             "historical": "",
         },
     )
-    # Non-negotiable: an AI-written report never auto-approves.
-    if verdict.get("gptzero", {}).get("ai_probability", 0) > 0.85:
+    # Non-negotiable in strict mode: an AI-written report never auto-approves.
+    # Same test as agent.py's rule 1, and a backstop for the canned-verdict path
+    # above, which never ran the arbiter. Lenient mode leaves the status alone —
+    # the advisory is already in the reasoning.
+    gz = verdict.get("gptzero") or {}
+    score = gz.get("ai_probability")
+    flagged = bool(gz.get("flagged")) or (
+        isinstance(score, (int, float)) and score > FLAG_THRESHOLD
+    )
+    if strict and flagged:
         verdict["status"] = "UNDER_REVIEW"
-        verdict["gptzero"]["flagged"] = True
+        gz["flagged"] = True
         verdict.setdefault(
             "actionable_request",
             "Report flagged as AI-generated. Re-submit a first-hand account of the work performed.",
@@ -203,6 +214,14 @@ async def verify(task_id: str, body: VerifyRequest):
             "image_base64": body.image_base64,
             "transcript": body.transcript,
             "verdict": verdict,
+            # What GPTZero said, recorded identically in both modes; only the
+            # decision below follows the verdict. No score at all is NULL, not
+            # 0.0 — a missing reading and a confident-human one differ.
+            "gptzero_score": score if isinstance(score, (int, float)) else None,
+            "gptzero_flag": "flagged" if flagged else "clear",
+            "owner_decision": {"APPROVED": "approved", "DISPUTED": "disputed"}.get(
+                verdict["status"], "pending"
+            ),
             "created_at": _now(),
         }
     )

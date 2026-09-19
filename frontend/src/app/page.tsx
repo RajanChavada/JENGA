@@ -22,6 +22,8 @@ export default function Home() {
   const selectTask = useJenga((s) => s.selectTask);
   const loading = useJenga((s) => s.loading);
   const offline = useJenga((s) => s.offline);
+  const strict = useJenga((s) => s.strict);
+  const setStrict = useJenga((s) => s.setStrict);
   const [show3d, setShow3d] = useState(true);
   const [view, setView] = useState<'macro' | 'micro'>('micro');
 
@@ -72,6 +74,21 @@ export default function Home() {
             className="rounded-md border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 transition-colors hover:bg-slate-50"
           >
             Reset
+          </button>
+          <button
+            onClick={() => setStrict(!strict)}
+            aria-pressed={strict}
+            title="Hard-gate AI-written reports (Rox) / advisory only (main)"
+            className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs transition-colors ${
+              strict
+                ? 'border-slate-900 bg-slate-900 text-white'
+                : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-900'
+            }`}
+          >
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${strict ? 'bg-emerald-400' : 'bg-slate-300'}`}
+            />
+            Strict
           </button>
           <SubmitUpdateModal />
         </div>

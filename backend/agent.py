@@ -6,7 +6,8 @@ Two rules govern the arbiter, in this order:
 
 1. GPTZero gate. An AI-authored report (ai_probability > 0.85) forces UNDER_REVIEW
    no matter how good the photograph looks. A generated narrative can describe work
-   nobody performed.
+   nobody performed. Under `strict=False` the gate is advisory instead: the score is
+   appended to the reasoning and the remaining rules decide the status.
 
 2. The ambiguity rule. If the image cannot actually be read — dark, occluded, blurry,
    badly framed — the verdict is UNDER_REVIEW at confidence < 0.5 with an actionable
@@ -33,6 +34,8 @@ class VerifyState(TypedDict, total=False):
     image_base64: str | None
     transcript: str | None
     claim: str
+    #: False demotes the AI gate from a hard override to an advisory line.
+    strict: bool
     gptzero: dict
     vision: dict
     historical: dict
@@ -106,18 +109,21 @@ async def historical_memory(state: VerifyState) -> dict:
 async def arbiter(state: VerifyState) -> dict:
     """Resolve across all three sources and emit the final Verdict."""
     task_id = state["task"].get("id", "")
+    strict = bool(state.get("strict", True))
     with span("arbiter", task_id=task_id) as s:
         result = await _decide(state)
         verdict = result["verdict"]
         # Which rule fired is recoverable from the verdict itself: only the AI
-        # gate produces a hold with `flagged` set.
+        # gate produces a hold with `flagged` set — and only in strict mode,
+        # where the gate can still override.
         if verdict["status"] == "UNDER_REVIEW":
-            branch = "ai_gate" if verdict["gptzero"]["flagged"] else "ambiguity_rule"
+            branch = "ai_gate" if strict and verdict["gptzero"]["flagged"] else "ambiguity_rule"
         elif verdict["status"] == "DISPUTED":
             branch = "contradiction"
         else:
             branch = "approved"
         s.set_data("branch", branch)
+        s.set_data("strict", strict)
         s.set_data("status", verdict["status"])
         s.set_data("confidence", verdict["confidence"])
         emit(
@@ -125,6 +131,7 @@ async def arbiter(state: VerifyState) -> dict:
             "arbiter resolved verdict",
             task_id=task_id,
             branch=branch,
+            strict=strict,
             status=verdict["status"],
             confidence=verdict["confidence"],
             actionable=bool(verdict["actionable_request"]),
@@ -147,12 +154,17 @@ async def _decide(state: VerifyState) -> dict:
     hist_summary = hist.get("summary", "No comparable historical packages were found.")
     ai_prob = float(gz.get("ai_probability", 0.0))
     ai_flagged = bool(gz.get("flagged")) or ai_prob > FLAG_THRESHOLD
+    # Strict mode lets the AI gate override every other source; lenient mode
+    # demotes it to an advisory line appended once the other rules have run.
+    strict = bool(state.get("strict", True))
 
     coords = f"blueprint coordinates X:{task.get('x')} Y:{task.get('y')}"
     where = f"{task.get('name', task_id)} in {str(task.get('zone', '')).replace('_', ' ')}"
 
-    # Rule 1 — the AI gate. Hard override, nothing downstream can lift it.
-    if ai_flagged:
+    # Rule 1 — the AI gate. In strict mode a hard override, nothing downstream
+    # can lift it. In lenient mode it does not fire at all and evaluation falls
+    # through to the rules below.
+    if ai_flagged and strict:
         status = "UNDER_REVIEW"
         confidence = min(vis_conf, 0.49)
         reasoning = (
@@ -221,6 +233,13 @@ async def _decide(state: VerifyState) -> dict:
         if isinstance(canned.get("confidence"), (int, float)):
             confidence = float(canned["confidence"])
 
+    # Lenient mode's advisory. Appended after the canned override so that wording
+    # cannot swallow it, and only when the gate would have fired in strict mode.
+    # Reasoning only — the status, confidence and request are left as the
+    # surviving rule set them.
+    if ai_flagged and not strict:
+        reasoning = f"{reasoning.rstrip()} GPTZero advisory: {ai_prob:.0%} AI"
+
     if status == "UNDER_REVIEW":
         confidence = min(confidence, 0.49)
         request = request or (
@@ -268,6 +287,7 @@ def _build_trace(state: VerifyState) -> list[dict]:
 
     ai_prob = float(gz.get("ai_probability", 0.0))
     ai_flagged = bool(gz.get("flagged"))
+    strict = bool(state.get("strict", True))
     matches = vision.get("matches_claim")
     vis_conf = float(vision.get("confidence", 0.0))
     insufficient = bool(vision.get("insufficient")) or matches is None
@@ -285,15 +305,20 @@ def _build_trace(state: VerifyState) -> list[dict]:
         vision_detail = f"Image cannot establish the claim ({vis_conf:.0%} confidence) — insufficient." if insufficient else f"Inconclusive ({vis_conf:.0%})."
         vision_signal = "warn"
 
+    if not ai_flagged:
+        gate_detail, gate_signal = "reads as first-hand.", "ok"
+    elif strict:
+        gate_detail, gate_signal = "flagged, cannot auto-approve on prose.", "bad"
+    else:
+        # Lenient mode: say so, or the card contradicts an approval below it.
+        gate_detail, gate_signal = "flagged, advisory only — not gating this verdict.", "warn"
+
     return [
         {
             "node": "gptzero_gate",
             "title": "1 · Authorship gate",
-            "detail": (
-                f"Report scores {ai_prob:.0%} AI-authorship — "
-                + ("flagged, cannot auto-approve on prose." if ai_flagged else "reads as first-hand.")
-            ),
-            "signal": "bad" if ai_flagged else "ok",
+            "detail": f"Report scores {ai_prob:.0%} AI-authorship — {gate_detail}",
+            "signal": gate_signal,
         },
         {
             "node": "vision_analysis",
@@ -344,8 +369,12 @@ async def verify_submission(
     report_text: str | None,
     image_base64: str | None,
     transcript: str | None,
+    strict: bool = True,
 ) -> dict[str, Any]:
-    """Run the verification pipeline. Returns a Verdict dict. Never raises."""
+    """Run the verification pipeline. Returns a Verdict dict. Never raises.
+
+    `strict=False` demotes the GPTZero gate to an advisory; see `_decide`.
+    """
     claim = " ".join(p.strip() for p in (report_text, transcript) if p and p.strip())
     task_id = task.get("id", "")
     try:
@@ -357,6 +386,7 @@ async def verify_submission(
                     "image_base64": image_base64,
                     "transcript": transcript,
                     "claim": claim,
+                    "strict": strict,
                 }
             )
             verdict = final["verdict"]
