@@ -214,13 +214,25 @@ async def hotzones(force_live: bool = False) -> dict:
     if not hot:
         return _fallback("Browserbase Fetch returned no parseable construction sites; using seeded hotzones.")
 
-    # Keep stable ordering and dedupe by id.
+    # Live zones win by id, but seeded zones the scrape didn't cover stay on the
+    # map. A replace here would drop whichever pins today's page text happened
+    # not to mention — including the one site that drills into the product —
+    # which turns a successful scrape into a worse map. Each retained zone keeps
+    # its "offline demo seed" source, so per-pin provenance stays honest.
     deduped = {h["id"]: h for h in hot}
+    retained = [
+        {**h, "updated_at": _now()}
+        for h in FALLBACK_HOTZONES
+        if h["id"] not in deduped
+    ]
     result = {
         "source": "browserbase",
         "generated_at": _now(),
-        "notes": "Fetched with Browserbase Fetch API from Toronto/Metrolinx public construction pages.",
-        "hotzones": list(deduped.values()),
+        "notes": (
+            f"Browserbase Fetch pulled {len(deduped)} zone(s) live from Toronto/Metrolinx "
+            f"pages; {len(retained)} seeded zone(s) retained for coverage."
+        ),
+        "hotzones": list(deduped.values()) + retained,
     }
     _last_scrape = result
     return result
