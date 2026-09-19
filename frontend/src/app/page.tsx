@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
+import { ArrowLeft, ListChecks, Waypoints, Workflow } from 'lucide-react';
 import { WorkGraph } from '@/components/WorkGraph';
 import { Timeline } from '@/components/Timeline';
 import { VerdictPanel } from '@/components/VerdictPanel';
@@ -9,7 +10,15 @@ import { AttributionLedger } from '@/components/AttributionLedger';
 import { SubmitUpdateModal } from '@/components/SubmitUpdateModal';
 import { MacroHeatmap } from '@/components/MacroHeatmap';
 import { SensorStrip } from '@/components/SensorStrip';
+import { DocumentUpload } from '@/components/DocumentUpload';
 import { useJenga } from '@/store/useJenga';
+
+/** What the extractor gives back, spelled out on the empty site. */
+const ONBOARD_YIELD = [
+  { icon: ListChecks, title: 'Work packages', detail: 'name, zone, duration' },
+  { icon: Workflow, title: 'Dependencies', detail: 'what blocks what' },
+  { icon: Waypoints, title: 'Critical path', detail: 'float and slip' },
+];
 
 // Three.js touches window during module init, so keep it off the server.
 const StationView = dynamic(
@@ -19,14 +28,24 @@ const StationView = dynamic(
 
 export default function Home() {
   const load = useJenga((s) => s.load);
+  const loadSite = useJenga((s) => s.loadSite);
   const reset = useJenga((s) => s.reset);
-  const selectTask = useJenga((s) => s.selectTask);
   const loading = useJenga((s) => s.loading);
   const offline = useJenga((s) => s.offline);
   const strict = useJenga((s) => s.strict);
   const setStrict = useJenga((s) => s.setStrict);
+  const view = useJenga((s) => s.view);
+  const setView = useJenga((s) => s.setView);
+  const siteName = useJenga((s) => s.activeSiteName);
   const [show3d, setShow3d] = useState(true);
-  const [view, setView] = useState<'macro' | 'micro'>('micro');
+
+  // Two different questions. `onboarded` is about the site — a hotzone with no
+  // project behind it gets the onboarding pitch, not an error — and answering
+  // it from the project id rather than the task count keeps the chrome steady
+  // while a graph is still in flight. `hasGraph` is about this render: whether
+  // there is anything for the work-package surfaces to draw.
+  const onboarded = useJenga((s) => s.activeProjectId !== null);
+  const hasGraph = useJenga((s) => s.tasks.length > 0);
 
   useEffect(() => {
     void load();
@@ -38,7 +57,7 @@ export default function Home() {
         <div className="flex items-baseline gap-3">
           <h1 className="text-sm font-semibold tracking-tight text-slate-900">JENGA</h1>
           <span className="text-[11px] text-slate-500">
-            Eglinton West Station · Structural Package
+            {siteName} · {onboarded ? 'Structural Package' : 'Not onboarded'}
           </span>
           {offline && (
             <span className="rounded border border-slate-300 px-1.5 py-0.5 font-mono text-[9px] text-slate-500">
@@ -65,7 +84,7 @@ export default function Home() {
           </div>
           <button
             onClick={() => setShow3d((v) => !v)}
-            disabled={view === 'macro'}
+            disabled={view === 'macro' || !onboarded}
             className="rounded-md border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-40"
           >
             {show3d ? 'Hide 3D' : 'Show 3D'}
@@ -91,7 +110,9 @@ export default function Home() {
             />
             Strict
           </button>
-          <SubmitUpdateModal />
+          {/* No graph, nothing to submit against — and a submission here would
+              404 on the backend and retire the session to fixtures. */}
+          {hasGraph && <SubmitUpdateModal />}
         </div>
       </header>
 
@@ -102,12 +123,9 @@ export default function Home() {
               loading graph…
             </div>
           ) : view === 'macro' ? (
-            <MacroHeatmap
-              onOpenSite={() => {
-                setView('micro');
-                selectTask('P-106');
-              }}
-            />
+            <MacroHeatmap onOpenSite={(hotzone) => void loadSite(hotzone.id)} />
+          ) : !hasGraph ? (
+            <OnboardSite />
           ) : (
             <div className="flex h-full min-h-0 flex-col">
               <div className="relative min-h-0 flex-[2]">
@@ -124,14 +142,76 @@ export default function Home() {
           )}
         </div>
 
-        {view === 'micro' && show3d && (
+        {view === 'micro' && onboarded && show3d && (
           <div className="h-full w-[360px] shrink-0 border-l border-slate-200">
             <StationView />
           </div>
         )}
 
-        {view === 'micro' && <AttributionLedger />}
+        {view === 'micro' && onboarded && <AttributionLedger />}
       </div>
     </main>
+  );
+}
+
+/**
+ * What a hotzone with no project behind it opens into.
+ *
+ * This is the pitch, not an error page: the map watches every site in the city
+ * from the outside, and a blueprint is the one thing that turns one of them
+ * into a graph JENGA can verify against. So it names the site, says what is
+ * missing and why, and hands over the same extractor the spec tab already uses.
+ */
+function OnboardSite() {
+  const siteName = useJenga((s) => s.activeSiteName);
+  const setView = useJenga((s) => s.setView);
+
+  return (
+    <div className="h-full overflow-auto bg-slate-50 p-6">
+      <div className="mx-auto max-w-xl">
+        <button
+          onClick={() => setView('macro')}
+          className="mb-3 flex items-center gap-1 text-[11px] text-slate-500 transition-colors hover:text-slate-900"
+        >
+          <ArrowLeft size={12} />
+          Back to the Toronto map
+        </button>
+
+        <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <p className="text-[10px] uppercase tracking-wider text-slate-400">
+            Not onboarded
+          </p>
+          <h2 className="mt-1 text-lg font-semibold tracking-tight text-slate-900">
+            {siteName}
+          </h2>
+          <p className="mt-2 text-[11px] leading-relaxed text-slate-600">
+            JENGA is watching this hotzone from the outside — permits, closures and the
+            municipal feed. There is no dependency graph behind it yet, because nobody
+            has handed it the drawings. Upload the spec or blueprint and it reads the
+            work packages and the dependencies between them straight off the document.
+          </p>
+
+          <div className="mt-4 grid grid-cols-3 gap-2">
+            {ONBOARD_YIELD.map(({ icon: Icon, title, detail }) => (
+              <div
+                key={title}
+                className="rounded-lg border border-slate-200 bg-slate-50 p-2.5"
+              >
+                <Icon size={13} className="text-slate-400" />
+                <p className="mt-1.5 text-[11px] text-slate-700">{title}</p>
+                <p className="text-[10px] leading-snug text-slate-400">{detail}</p>
+              </div>
+            ))}
+          </div>
+
+          <h3 className="mt-5 text-[10px] uppercase tracking-wider text-slate-400">
+            Onboard from blueprint
+          </h3>
+          <div className="mt-2">
+            <DocumentUpload initialMode="spec" />
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }

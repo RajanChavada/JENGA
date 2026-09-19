@@ -14,11 +14,18 @@ const ACCEPT = '.pdf,.doc,.docx,.txt,.md';
 
 export function DocumentUpload({
   onReportText,
+  initialMode = 'report',
 }: {
-  /** Called with extracted text when a daily report is parsed and the user runs it. */
-  onReportText: (text: string, filename: string) => void;
+  /**
+   * Called with extracted text when a daily report is parsed and the user runs
+   * it. Omitted on a site with no graph yet: there is nothing to verify a
+   * report against, so that half of the component is not offered at all.
+   */
+  onReportText?: (text: string, filename: string) => void;
+  /** Which tab opens first. Onboarding a new site starts on the blueprint. */
+  initialMode?: Mode;
 }) {
-  const [mode, setMode] = useState<Mode>('report');
+  const [mode, setMode] = useState<Mode>(initialMode);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [doc, setDoc] = useState<ParsedDoc | null>(null);
@@ -51,29 +58,31 @@ export function DocumentUpload({
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center gap-2">
-        {(
-          [
-            ['report', 'Daily report'],
-            ['spec', 'Spec / blueprint'],
-          ] as [Mode, string][]
-        ).map(([m, label]) => (
-          <button
-            key={m}
-            onClick={() => {
-              setMode(m);
-              setDoc(null);
-              setExtracted(null);
-              setError(null);
-            }}
-            className={`rounded-md px-2.5 py-1 text-[11px] transition-colors ${
-              mode === m
-                ? 'bg-slate-900 text-white'
-                : 'border border-slate-200 text-slate-500 hover:bg-slate-50'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
+        {/* One mode, no tabs: an unonboarded site can only take a blueprint. */}
+        {onReportText &&
+          (
+            [
+              ['report', 'Daily report'],
+              ['spec', 'Spec / blueprint'],
+            ] as [Mode, string][]
+          ).map(([m, label]) => (
+            <button
+              key={m}
+              onClick={() => {
+                setMode(m);
+                setDoc(null);
+                setExtracted(null);
+                setError(null);
+              }}
+              className={`rounded-md px-2.5 py-1 text-[11px] transition-colors ${
+                mode === m
+                  ? 'bg-slate-900 text-white'
+                  : 'border border-slate-200 text-slate-500 hover:bg-slate-50'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
         <span className="ml-auto text-[10px] text-slate-400">
           PDF · DOCX · TXT · MD
         </span>
@@ -153,12 +162,14 @@ export function DocumentUpload({
             <p className="mt-1.5 max-h-24 overflow-auto whitespace-pre-wrap text-[10px] leading-relaxed text-slate-500">
               {doc.preview}
             </p>
-            <button
-              onClick={() => onReportText(doc.text, doc.filename)}
-              className="mt-2 rounded-md bg-slate-900 px-2.5 py-1 text-[11px] font-medium text-white transition-colors hover:bg-slate-800"
-            >
-              Run verification →
-            </button>
+            {onReportText && (
+              <button
+                onClick={() => onReportText(doc.text, doc.filename)}
+                className="mt-2 rounded-md bg-slate-900 px-2.5 py-1 text-[11px] font-medium text-white transition-colors hover:bg-slate-800"
+              >
+                Run verification →
+              </button>
+            )}
           </motion.div>
         )}
 

@@ -47,8 +47,15 @@ async function call<T>(
   }
 }
 
-export function fetchGraph(): Promise<GraphResponse> {
-  return call('/api/graph', undefined, fx.graph);
+/**
+ * One site's graph. The fixture fallback is the default project's, which is the
+ * only one it has — an offline drill-down into another site would show Eglinton
+ * West's work packages under its name, so callers past the default should treat
+ * the offline path as unsupported rather than trusted.
+ */
+export function fetchGraph(projectId?: string): Promise<GraphResponse> {
+  const q = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
+  return call(`/api/graph${q}`, undefined, fx.graph);
 }
 
 export function fetchPurchaseOrders(): Promise<PurchaseOrder[]> {

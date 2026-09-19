@@ -18,7 +18,14 @@ import type {
 /** Milliseconds of delay per topological rank during the cascade. */
 export const CASCADE_STEP_MS = 120;
 
+/** The one site JENGA ships onboarded. Mirrors `db.DEFAULT_PROJECT_ID`. */
+export const DEFAULT_PROJECT_ID = 'eglinton-west-station';
+const DEFAULT_SITE_NAME = 'Eglinton West Station';
+
 export type ViewMode = 'blueprint' | 'logical';
+
+/** Toronto-wide hotzone map, or one site's dependency graph. */
+export type SiteView = 'macro' | 'micro';
 
 /** One entry per state transition a task went through. Append-only. */
 export interface StageEvent {
@@ -50,6 +57,15 @@ function recordStages(
 }
 
 interface JengaState {
+  /**
+   * The project whose graph is on screen, or null for a hotzone JENGA has no
+   * site behind yet — the state the blueprint-onboarding pitch renders from.
+   */
+  activeProjectId: string | null;
+  /** Display name of that site, straight off the hotzone. Drives the header. */
+  activeSiteName: string;
+  view: SiteView;
+
   tasks: Task[];
   edges: GraphEdge[];
   criticalPath: string[];
@@ -77,8 +93,10 @@ interface JengaState {
   cascading: boolean;
   offline: boolean;
 
-  load: () => Promise<void>;
+  load: (projectId?: string) => Promise<void>;
+  loadSite: (hotzoneId: string) => Promise<void>;
   reset: () => Promise<void>;
+  setView: (v: SiteView) => void;
   setMode: (m: ViewMode) => void;
   setStrict: (v: boolean) => void;
   selectTask: (id: string | null) => void;
@@ -90,7 +108,18 @@ interface JengaState {
   runDispute: (taskId: string, delayDays: number, reason: string) => Promise<void>;
 }
 
-export const useJenga = create<JengaState>((set, get) => ({
+/**
+ * Every slice of the store that belongs to one site, at its empty value.
+ *
+ * A site switch writes all of it in a single `set`, because each field is a
+ * claim about the project that was on screen: a verdict, a selection, a
+ * sparkline or a purchase order from Eglinton West says nothing true about
+ * Dufferin, and a panel left floating over the wrong site reads as a bug.
+ * `hotzones`, `mode` and `strict` are deliberately absent — the map is
+ * Toronto-wide and the other two are the operator's preferences, not the
+ * site's.
+ */
+const EMPTY_SITE = {
   tasks: [],
   edges: [],
   criticalPath: [],
@@ -98,31 +127,43 @@ export const useJenga = create<JengaState>((set, get) => ({
   baselineDuration: null,
   baseline: {},
   stageHistory: {},
-
-  mode: 'blueprint',
   selectedTaskId: null,
   selectedZone: null,
-  strict: true,
-
   verdict: null,
+  sideEffect: null,
   attributions: [],
   purchaseOrders: [],
-  hotzones: null,
-  sideEffect: null,
   sensors: {},
-
-  loading: true,
   busy: false,
   cascading: false,
+} satisfies Partial<JengaState>;
+
+export const useJenga = create<JengaState>((set, get) => ({
+  ...EMPTY_SITE,
+
+  activeProjectId: DEFAULT_PROJECT_ID,
+  activeSiteName: DEFAULT_SITE_NAME,
+  view: 'micro',
+
+  mode: 'blueprint',
+  strict: true,
+
+  hotzones: null,
+
+  loading: true,
   offline: false,
 
-  async load() {
-    set({ loading: true });
+  async load(projectId) {
+    const target = projectId ?? get().activeProjectId ?? DEFAULT_PROJECT_ID;
+    set({ loading: true, activeProjectId: target });
     const [g, pos, hotzones] = await Promise.all([
-      api.fetchGraph(),
+      api.fetchGraph(target),
       api.fetchPurchaseOrders(),
       api.fetchHotzones(),
     ]);
+    // Two sites clicked in quick succession: the slower response is the older
+    // site's, and must not land on top of the newer one.
+    if (get().activeProjectId !== target) return;
     set({
       tasks: g.tasks,
       edges: g.edges,
@@ -140,6 +181,32 @@ export const useJenga = create<JengaState>((set, get) => ({
     });
   },
 
+  /**
+   * Drill from a map pin into that site. The hotzone carries the project id, so
+   * this is the only place that decides which of the two micro-views the map
+   * opens: the dependency graph, or the pitch for onboarding a site we have no
+   * blueprint for yet.
+   */
+  async loadSite(hotzoneId) {
+    const hotzone = get().hotzones?.hotzones.find((h) => h.id === hotzoneId);
+    if (!hotzone) return;
+    const projectId = hotzone.linked_site_id;
+
+    // One write: the old site's state goes and the new site's identity arrives
+    // together, so no render sees Eglinton West's verdict over Dufferin's name.
+    // `loading` is true only when a graph is actually coming, otherwise the
+    // empty state would flicker in for a frame before the fetch resolved.
+    set({
+      ...EMPTY_SITE,
+      view: 'micro',
+      activeProjectId: projectId,
+      activeSiteName: hotzone.name,
+      loading: projectId !== null,
+    });
+
+    if (projectId) await get().load(projectId);
+  },
+
   async reset() {
     set({
       verdict: null,
@@ -148,9 +215,13 @@ export const useJenga = create<JengaState>((set, get) => ({
       selectedTaskId: null,
       sensors: {},
     });
+    // Nothing to re-seed on a site with no project: reloading here would pull
+    // the default project's graph onto a pin that has no site behind it.
+    if (get().activeProjectId === null) return;
     await get().load();
   },
 
+  setView: (view) => set({ view }),
   setMode: (mode) => set({ mode }),
   setStrict: (strict) => set({ strict }),
   selectTask: (selectedTaskId) => set({ selectedTaskId }),
@@ -164,15 +235,24 @@ export const useJenga = create<JengaState>((set, get) => ({
    */
   async loadSensors(id) {
     const payload = await api.fetchSensors(id);
+    // A poll in flight when the site changed belongs to the old project. The
+    // strip is already unmounted by then, but writing the reading back would
+    // put the ticket straight into the map the switch just cleared.
+    if (!get().tasks.some((t) => t.id === id)) return;
     set((s) => ({ sensors: { ...s.sensors, [id]: payload } }));
   },
 
   async submit(submissionId) {
     const sub = fx.SUBMISSIONS.find((s) => s.id === submissionId);
     if (!sub) return;
+    const site = get().activeProjectId;
     set({ busy: true, verdict: null, sideEffect: null });
 
     const verdict = await api.verify(sub.task_id, submissionId, get().tasks, get().strict);
+    // Verification takes seconds; the presenter can be on another site by the
+    // time it answers. That verdict is about the site it was submitted from.
+    // The switch already cleared `busy`, so there is nothing to unwind.
+    if (get().activeProjectId !== site) return;
     const nextState = fx.stateForVerdict(verdict.status);
 
     set((s) => {
@@ -215,9 +295,11 @@ export const useJenga = create<JengaState>((set, get) => ({
    * lookup: there is no fixture entry to read procurement fallout from.
    */
   async submitText(taskId, text, filename) {
+    const site = get().activeProjectId;
     set({ busy: true, verdict: null, sideEffect: null });
 
     const verdict = await api.verifyWithText(taskId, text, get().tasks, get().strict);
+    if (get().activeProjectId !== site) return; // see `submit`
     const nextState = fx.stateForVerdict(verdict.status);
 
     set((s) => {
@@ -239,8 +321,10 @@ export const useJenga = create<JengaState>((set, get) => ({
   },
 
   async runDispute(taskId, delayDays, reason) {
+    const site = get().activeProjectId;
     set({ busy: true, cascading: true });
     const res = await api.dispute(taskId, delayDays, reason, get().tasks);
+    if (get().activeProjectId !== site) return; // see `submit`
 
     // The cascade is the demo's money shot: rather than swapping the whole graph
     // at once, walk it rank by rank so the delay is visibly seen propagating
@@ -270,6 +354,10 @@ export const useJenga = create<JengaState>((set, get) => ({
 
     ranks.forEach((rank, i) => {
       setTimeout(() => {
+        // The cascade animates over the next second or so; a site switch part
+        // way through must stop it rather than write the old graph's ranks —
+        // and its attribution entry — into the new site.
+        if (get().activeProjectId !== site) return;
         const moved = byDepth.get(rank)!;
         set((s) => {
           const tasks = s.tasks.map((t) => {

@@ -25,7 +25,7 @@ def load_seed():
     return json.loads(SEED_FILE.read_text())
 
 
-async def seed():
+async def seed(project_id=db.DEFAULT_PROJECT_ID):
     raw = load_seed()
     await db.reset(
         {
@@ -36,7 +36,8 @@ async def seed():
             "purchase_orders": [
                 {k: p.get(k) for k in PO_FIELDS} for p in raw.get("purchase_orders", [])
             ],
-        }
+        },
+        project_id,
     )
 
 

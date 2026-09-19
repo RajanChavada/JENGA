@@ -3,7 +3,7 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import Map, { Marker, Popup, NavigationControl } from 'react-map-gl/maplibre';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { MapPinned, RadioTower, RefreshCw } from 'lucide-react';
+import { FileUp, MapPinned, RadioTower, RefreshCw } from 'lucide-react';
 import { useJenga } from '@/store/useJenga';
 import type { Hotzone } from '@/lib/types';
 
@@ -82,7 +82,16 @@ function PulsingDot({
 /* Component                                                                  */
 /* -------------------------------------------------------------------------- */
 
-export function MacroHeatmap({ onOpenSite }: { onOpenSite: () => void }) {
+export function MacroHeatmap({
+  onOpenSite,
+}: {
+  /**
+   * Called with the hotzone itself, linked or not: an unlinked pin opens the
+   * onboarding pitch rather than nothing, so the caller needs to know which
+   * site was clicked to decide between the two.
+   */
+  onOpenSite: (hotzone: Hotzone) => void;
+}) {
   const hotzones = useJenga((s) => s.hotzones);
   const [popupId, setPopupId] = useState<string | null>(null);
 
@@ -107,9 +116,7 @@ export function MacroHeatmap({ onOpenSite }: { onOpenSite: () => void }) {
   const handleDrillDown = useCallback(
     (h: Hotzone) => {
       setPopupId(null);
-      if (h.linked_site_id) {
-        onOpenSite();
-      }
+      onOpenSite(h);
     },
     [onOpenSite],
   );
@@ -217,9 +224,13 @@ export function MacroHeatmap({ onOpenSite }: { onOpenSite: () => void }) {
                     Drill into JENGA micro-view →
                   </button>
                 ) : (
-                  <p className="mt-2 text-[10px] italic text-slate-400">
-                    No JENGA site linked — external monitoring only.
-                  </p>
+                  <button
+                    onClick={() => handleDrillDown(popupInfo)}
+                    className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-md border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 transition-colors hover:border-slate-400 hover:bg-slate-50"
+                  >
+                    <FileUp size={13} />
+                    Onboard this site from its blueprint →
+                  </button>
                 )}
               </div>
             </Popup>
@@ -257,7 +268,7 @@ export function MacroHeatmap({ onOpenSite }: { onOpenSite: () => void }) {
                 type="button"
                 onClick={() => {
                   setPopupId(h.id);
-                  if (h.linked_site_id) onOpenSite();
+                  onOpenSite(h);
                 }}
                 className={`rounded-lg border p-2.5 text-left transition-all ${
                   active
@@ -277,10 +288,15 @@ export function MacroHeatmap({ onOpenSite }: { onOpenSite: () => void }) {
                 <p className="mt-2 text-[10px] leading-relaxed text-slate-500">
                   {h.summary}
                 </p>
-                {h.linked_site_id && (
+                {h.linked_site_id ? (
                   <span className="mt-2 inline-flex items-center gap-1 font-mono text-[10px] text-slate-900">
                     <MapPinned size={11} />
                     click drills into JENGA
+                  </span>
+                ) : (
+                  <span className="mt-2 inline-flex items-center gap-1 font-mono text-[10px] text-slate-500">
+                    <FileUp size={11} />
+                    not onboarded · click to add a blueprint
                   </span>
                 )}
               </button>

@@ -110,8 +110,10 @@ def _canned_zip_action(task_id):
     return (sub or {}).get("expected", {}).get("zip_action")
 
 
-async def _graph():
-    return cpm_engine.build_graph(await db.tasks(), await db.edges())
+async def _graph(project_id=db.DEFAULT_PROJECT_ID):
+    return cpm_engine.build_graph(
+        await db.tasks(project_id), await db.edges(project_id)
+    )
 
 
 @asynccontextmanager
@@ -143,9 +145,12 @@ app.add_middleware(
 
 
 @app.get("/api/graph", response_model=GraphResponse)
-async def get_graph():
-    result = cpm_engine.compute(await _graph())
-    return {**result, "edges": await db.edges()}
+async def get_graph(project_id: str = db.DEFAULT_PROJECT_ID):
+    """One site's graph. A project with no tickets is a well-formed empty graph,
+    not a 404 — the map can drill into a site JENGA has not onboarded yet, and
+    the frontend renders that as the blueprint-upload pitch."""
+    result = cpm_engine.compute(await _graph(project_id))
+    return {**result, "edges": await db.edges(project_id)}
 
 
 @app.get("/api/hotzones", response_model=HotzoneResponse)
@@ -396,6 +401,6 @@ async def zip_status():
 
 
 @app.post("/api/reset")
-async def reset():
-    await seed_module.seed()
-    return {"ok": True}
+async def reset(project_id: str = db.DEFAULT_PROJECT_ID):
+    await seed_module.seed(project_id)
+    return {"ok": True, "project_id": project_id}
