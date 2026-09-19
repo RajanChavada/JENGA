@@ -5,7 +5,7 @@ import dynamic from 'next/dynamic';
 import { ArrowLeft, ListChecks, Waypoints, Workflow } from 'lucide-react';
 import { WorkGraph } from '@/components/WorkGraph';
 import { Timeline } from '@/components/Timeline';
-import { VerdictPanel } from '@/components/VerdictPanel';
+import { VerdictPanel, AgentRunning } from '@/components/VerdictPanel';
 import { AttributionLedger } from '@/components/AttributionLedger';
 import { SubmitUpdateModal } from '@/components/SubmitUpdateModal';
 import { MacroHeatmap } from '@/components/MacroHeatmap';
@@ -143,6 +143,7 @@ export default function Home() {
             <div className="flex h-full min-h-0 flex-col">
               <div className="relative min-h-0 flex-[2]">
                 <WorkGraph />
+                <AgentRunning />
                 <VerdictPanel />
               </div>
               {/* Under the DAG, above the schedule. Renders nothing until a

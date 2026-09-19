@@ -1,10 +1,76 @@
 'use client';
 
 import { AnimatePresence, motion } from 'framer-motion';
-import { AlertTriangle, Check, Cpu, HelpCircle, X } from 'lucide-react';
+import { AlertTriangle, Check, Cpu, HelpCircle, Loader2, X } from 'lucide-react';
 import { sensorCard, thresholdLabel, windowLabel } from '@/lib/fixtures';
 import { useJenga } from '@/store/useJenga';
 import type { Verdict, VerdictStep } from '@/lib/types';
+
+/* -------------------------------------------------------------------------- */
+/* Live agent pipeline — shown while the agent is verifying, before a verdict  */
+/* -------------------------------------------------------------------------- */
+
+const PIPELINE = [
+  { node: 'gptzero_gate', title: 'Authorship gate', work: 'scoring AI-authorship' },
+  { node: 'vision_analysis', title: 'Visual analysis', work: 'reading the site photo' },
+  { node: 'historical_memory', title: 'Historical memory', work: 'retrieving similar work' },
+  { node: 'sensor_check', title: 'Site telemetry', work: 'checking curing sensors' },
+  { node: 'arbiter', title: 'Arbiter', work: 'resolving the sources' },
+];
+
+/**
+ * Makes the agentic work legible: when a submission is verifying, the four
+ * evidence nodes and the arbiter light up in sequence, so the pipeline is
+ * something you watch run rather than a result that just appears. Suppressed
+ * during a dispute cascade (`cascading`) and the moment a verdict lands.
+ */
+export function AgentRunning() {
+  const busy = useJenga((s) => s.busy);
+  const cascading = useJenga((s) => s.cascading);
+  const verdict = useJenga((s) => s.verdict);
+  const show = busy && !cascading && !verdict;
+
+  return (
+    <AnimatePresence>
+      {show && (
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 8 }}
+          className="absolute bottom-4 left-4 right-4 z-20 rounded-xl border border-slate-200 bg-white/95 p-4 shadow-lg backdrop-blur"
+        >
+          <div className="mb-3 flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-slate-500">
+            <Loader2 size={12} className="animate-spin text-slate-500" />
+            Agent verifying · resolving four evidence sources, one arbiter
+          </div>
+          <ol className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
+            {PIPELINE.map((s, i) => (
+              <motion.li
+                key={s.node}
+                initial={{ opacity: 0.4 }}
+                animate={{ opacity: [0.4, 1, 0.4] }}
+                transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.18, ease: 'easeInOut' }}
+                className="rounded-md border border-slate-200 bg-slate-50 p-2"
+              >
+                <div className="flex items-center gap-1.5">
+                  <motion.span
+                    className="h-2 w-2 rounded-full bg-sky-500"
+                    animate={{ scale: [1, 1.4, 1] }}
+                    transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.18, ease: 'easeInOut' }}
+                  />
+                  <span className="text-[10px] font-semibold text-slate-700">
+                    {i + 1} · {s.title}
+                  </span>
+                </div>
+                <p className="mt-1 text-[10px] text-slate-400">{s.work}…</p>
+              </motion.li>
+            ))}
+          </ol>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
 
 const STATUS_STYLE = {
   APPROVED: {
