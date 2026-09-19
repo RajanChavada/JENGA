@@ -219,9 +219,22 @@ function authorship(v: Verdict): {
       traceDetail: `Report scores ${pct}% AI-authorship — reads as first-hand.`,
     };
   }
-  if (v.status === 'APPROVED') {
+
+  // The backend's own authorship card already knows which mode ran: `bad`
+  // means the gate blocked this verdict, `warn` means the score was recorded
+  // and the other sources ruled. Prefer it, since a lenient hold that came
+  // from the photograph is not a block by the gate. Offline there is no
+  // trace, so fall back to the status — approximate, but it still cannot
+  // claim a block underneath an approval.
+  const card = v.trace?.find((s) => s.node === 'gptzero_gate');
+  const gating = card ? card.signal === 'bad' : v.status !== 'APPROVED';
+
+  if (!gating) {
     return {
-      footer: `⚠ ${pct}% AI-generated — advisory only, did not block approval`,
+      footer:
+        v.status === 'APPROVED'
+          ? `⚠ ${pct}% AI-generated — advisory only, did not block approval`
+          : `⚠ ${pct}% AI-generated — advisory only, not the deciding factor`,
       tone: 'warn',
       traceDetail: `Report scores ${pct}% AI-authorship — flagged, advisory only — not gating this verdict.`,
     };

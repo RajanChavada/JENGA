@@ -191,35 +191,44 @@ function historicalFor(task: Task | undefined): string {
 }
 
 /**
- * Offline mirror of the backend arbiter's lenient mode: rule 1 is demoted, so
- * rules 2–4 decide and the score is appended as an advisory. Without this the
- * Strict toggle would be inert whenever the API is down — which is the state
- * the whole fixture layer exists to survive. Keep in step with `_decide` in
- * backend/agent.py.
+ * Offline mirror of the backend arbiter's lenient mode. Lenient mode's only
+ * documented effect is that the authorship gate stops changing the status, so
+ * it can soften a verdict but must never harden one.
+ *
+ * The canned block does not record which rule produced a hold, and deriving a
+ * fresh status from vision alone gets it wrong: SUB-02's hold came from
+ * insufficient evidence, but its mirrored vision confidence reads 0.87, which
+ * turned a review hold into a DISPUTED header sitting above the canned
+ * insufficient-evidence prose. So a hold is left exactly as it stands and only
+ * the advisory is appended. Keep in step with `_decide` in backend/agent.py.
  */
-function asAdvisory(v: Verdict): Verdict {
+function asAdvisory(v: Verdict, task?: { x: number; y: number }): Verdict {
   if (!v.gptzero.flagged) return v;
 
-  const insufficient =
-    v.vision.matches_claim === null || v.vision.confidence < 0.5;
-  const status: VerdictStatus = insufficient
-    ? 'UNDER_REVIEW'
-    : v.vision.matches_claim
-      ? 'APPROVED'
-      : 'DISPUTED';
   const pct = Math.round(v.gptzero.ai_probability * 100);
-
   return {
     ...v,
-    status,
-    confidence:
-      status === 'UNDER_REVIEW'
-        ? Math.min(v.vision.confidence, 0.49)
-        : v.vision.confidence,
     reasoning: `${v.reasoning.trimEnd()} GPTZero advisory: ${pct}% AI`,
     actionable_request:
-      status === 'UNDER_REVIEW' ? v.actionable_request : null,
+      v.status === 'UNDER_REVIEW'
+        ? holdRequest(v.actionable_request, task)
+        : v.actionable_request,
   };
+}
+
+/**
+ * Every other layer guarantees a review hold names somewhere to go, and names
+ * it in blueprint coordinates. Mirrors the tail of `_decide`.
+ */
+function holdRequest(
+  request: string | null,
+  task?: { x: number; y: number },
+): string {
+  const where = task ? `X:${task.x} Y:${task.y}` : 'the recorded coordinates';
+  const base = request ?? 'Re-inspect on site and re-submit evidence.';
+  return base.includes('X:')
+    ? base
+    : `${base.trimEnd()} Blueprint coordinates ${where}.`;
 }
 
 /** Maps a submission's `expected` block onto the contract's Verdict shape. */
@@ -254,7 +263,7 @@ export function verdictFor(
     },
   };
 
-  return strict ? verdict : asAdvisory(verdict);
+  return strict ? verdict : asAdvisory(verdict, liveTask ?? seedTask);
 }
 
 /** Procurement fallout the agent noticed in the report text, if any. */
