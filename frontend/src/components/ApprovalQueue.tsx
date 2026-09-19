@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { X } from 'lucide-react';
-import { formatDate } from '@/lib/format';
+import { displayId, formatDate } from '@/lib/format';
 import type { Impact, QueueItem, VerdictStatus } from '@/lib/types';
 import { useJenga } from '@/store/useJenga';
 
@@ -107,7 +107,7 @@ function ReviewCard({ item }: { item: QueueItem }) {
     <div className="rounded-lg border border-slate-200 bg-white p-3">
       <div className="flex items-baseline justify-between gap-2">
         <span className="text-xs font-medium text-slate-900">{item.task_name}</span>
-        <span className="font-mono text-[10px] text-slate-400">{report.task_id.split(':').pop()}</span>
+        <span className="font-mono text-[10px] text-slate-400">{displayId(report.task_id)}</span>
       </div>
       <p className="text-[10px] text-slate-400">
         {item.project_name}

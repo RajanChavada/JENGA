@@ -165,7 +165,7 @@ export function MacroHeatmap({
   );
 
   return (
-    <div className="flex h-full min-h-0 bg-white">
+    <div className="flex h-full w-full min-h-0 bg-white">
       {/* --- Map panel --- */}
       <section className="relative min-w-0 flex-1 overflow-hidden border-r border-slate-200">
         {/* Status badge */}

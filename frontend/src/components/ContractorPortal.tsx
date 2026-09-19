@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { dueDate, formatDate } from "@/lib/format";
+import { displayId, dueDate, formatDate } from "@/lib/format";
 import { STATE_STYLE } from "@/lib/theme";
 import type { PortalProject, Report, Task } from "@/lib/types";
 import { useJenga } from "@/store/useJenga";
@@ -132,7 +132,7 @@ function TaskRow({
     <div className="p-3">
       <div className="flex items-center gap-3">
         <span className="w-12 shrink-0 font-mono text-[10px] text-slate-400">
-          {task.id.split(":").pop()}
+          {displayId(task.id)}
         </span>
         <span className="min-w-0 flex-1 truncate text-xs text-slate-800">
           {task.name}

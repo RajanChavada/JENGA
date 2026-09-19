@@ -118,6 +118,17 @@ company (`data/portal.json`).
   `ai_override`). `409` if already decided.
 
 ```ts
+**Selection focus (presentation only).** Selecting a task, or a zone in the twin, is one focus shared
+by every view; nothing about task states, endpoints or shapes changes. The graph fits the task and its
+direct predecessors/successors (a zone: its tasks) and dims the rest, the twin frames that zone along
+the user's current viewing angle and fades the other zones, and the schedule scrolls the row into view.
+A click in the graph does not re-zoom the graph.
+The default view (nothing focused) of the logical graph is a readable zoom (0.85) anchored on the start
+of the schedule, not a fit-all; the Controls fit button still shows every task. Logical-mode cards show
+exactly the task id, its duration (`5d`), its name and its status; a critical task has a red ring.
+Blueprint mode keeps its own card and fit-all view. Clearing (same row again, empty graph pane, empty 3D
+space, or Esc) returns every view to its default pose. Task focus and zone focus are mutually exclusive.
+
 **Denied overlay (3D and 2D).** `denied` is not a task state: it is a presentation overlay for a task
 that is `active` whose latest report was rejected by the owner. It draws solid, pulsing red
 (`#dc2626`, opacity 0.9), distinct from `disputed`'s red wireframe, and clears when the contractor

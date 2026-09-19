@@ -1,24 +1,23 @@
-'use client';
+"use client";
 
-import { useEffect } from 'react';
-import dynamic from 'next/dynamic';
-import { ArrowLeft, ArrowRight } from 'lucide-react';
-import { WorkGraph } from '@/components/WorkGraph';
-import { Timeline } from '@/components/Timeline';
-import { VerdictPanel, AgentRunning } from '@/components/VerdictPanel';
-import { AttributionLedger } from '@/components/AttributionLedger';
-import { ApprovalQueue } from '@/components/ApprovalQueue';
-import { ContractorPortal } from '@/components/ContractorPortal';
-import { RoleSwitcher } from '@/components/RoleSwitcher';
-import { ActivityRail, ActivityToggle } from '@/components/ActivityRail';
-import { MacroHeatmap } from '@/components/MacroHeatmap';
-import { SensorStrip } from '@/components/SensorStrip';
-import { DocumentUpload } from '@/components/DocumentUpload';
-import { useJenga } from '@/store/useJenga';
+import { useEffect, useRef } from "react";
+import dynamic from "next/dynamic";
+import { ArrowLeft, ArrowRight } from "lucide-react";
+import { WorkGraph } from "@/components/WorkGraph";
+import { Timeline } from "@/components/Timeline";
+import { VerdictPanel, AgentRunning } from "@/components/VerdictPanel";
+import { AttributionLedger } from "@/components/AttributionLedger";
+import { ApprovalQueue } from "@/components/ApprovalQueue";
+import { ContractorPortal } from "@/components/ContractorPortal";
+import { RoleSwitcher } from "@/components/RoleSwitcher";
+import { Splitter, useFraction } from "@/components/Splitter";
+import { ActivityRail, ActivityToggle } from "@/components/ActivityRail";
+import { MacroHeatmap } from "@/components/MacroHeatmap";
+import { DocumentUpload } from "@/components/DocumentUpload";
+import { useJenga } from "@/store/useJenga";
 
-// Three.js touches window during module init, so keep it off the server.
 const StationView = dynamic(
-  () => import('@/components/StationView').then((m) => m.StationView),
+  () => import("@/components/StationView").then((m) => m.StationView),
   { ssr: false, loading: () => <div className="h-full w-full bg-slate-50" /> },
 );
 
@@ -28,8 +27,6 @@ export default function Home() {
   const reset = useJenga((s) => s.reset);
   const loading = useJenga((s) => s.loading);
   const offline = useJenga((s) => s.offline);
-  const strict = useJenga((s) => s.strict);
-  const setStrict = useJenga((s) => s.setStrict);
   const view = useJenga((s) => s.view);
   const setView = useJenga((s) => s.setView);
   const microTab = useJenga((s) => s.microTab);
@@ -38,7 +35,7 @@ export default function Home() {
   const role = useJenga((s) => s.role);
   const restoreIdentity = useJenga((s) => s.restoreIdentity);
   const refreshPortal = useJenga((s) => s.refreshPortal);
-  const isOwner = role === 'owner';
+  const isOwner = role === "owner";
 
   // Two different questions, and they can disagree: a project that exists but
   // has no tickets yet is onboarded with nothing to draw.
@@ -61,13 +58,16 @@ export default function Home() {
     <main className="flex h-screen flex-col overflow-hidden bg-white text-slate-900">
       <header className="flex shrink-0 items-center justify-between border-b border-slate-200 bg-white px-4 py-2.5">
         <div className="flex items-baseline gap-3">
-          <h1 className="text-sm font-semibold tracking-tight text-slate-900">JENGA</h1>
+          <h1 className="text-sm font-semibold tracking-tight text-slate-900">
+            JENGA
+          </h1>
           <span className="text-[11px] text-slate-500">
             {/* Follows the body, with one exception: a graph still in flight
                 counts as present. Nothing is contradicted while the panel below
                 says "loading", and assuming otherwise flashes "Not onboarded"
                 on every page load — including into the server-rendered HTML. */}
-            {siteName} · {hasGraph || loading ? 'Structural Package' : 'Not onboarded'}
+            {siteName} ·{" "}
+            {hasGraph || loading ? "Structural Package" : "Not onboarded"}
           </span>
           {offline && (
             <span className="rounded border border-slate-300 px-1.5 py-0.5 font-mono text-[9px] text-slate-500">
@@ -81,14 +81,14 @@ export default function Home() {
           {isOwner && (
             <>
               <div className="flex overflow-hidden rounded-md border border-slate-200 text-xs">
-                {(['macro', 'micro'] as const).map((v) => (
+                {(["macro", "micro"] as const).map((v) => (
                   <button
                     key={v}
                     onClick={() => setView(v)}
                     className={`px-2.5 py-1.5 capitalize transition-colors ${
                       view === v
-                        ? 'bg-slate-900 text-white'
-                        : 'bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-900'
+                        ? "bg-slate-900 text-white"
+                        : "bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-900"
                     }`}
                   >
                     {v}
@@ -97,16 +97,16 @@ export default function Home() {
               </div>
 
               {/* Within a site: the work surface, or procurement + the ledger. */}
-              {view === 'micro' && hasGraph && (
+              {view === "micro" && hasGraph && (
                 <div className="flex overflow-hidden rounded-md border border-slate-200 text-xs">
-                  {(['site', 'procurement'] as const).map((t) => (
+                  {(["site", "procurement"] as const).map((t) => (
                     <button
                       key={t}
                       onClick={() => setMicroTab(t)}
                       className={`px-2.5 py-1.5 capitalize transition-colors ${
                         microTab === t
-                          ? 'bg-slate-900 text-white'
-                          : 'bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-900'
+                          ? "bg-slate-900 text-white"
+                          : "bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-900"
                       }`}
                     >
                       {t}
@@ -122,25 +122,14 @@ export default function Home() {
                 // default project's tasks onto someone else's pin. Say so here
                 // instead of leaving a button that looks live and does nothing.
                 disabled={!onboarded}
-                title={onboarded ? undefined : 'Nothing to reset — this site has no schedule yet'}
+                title={
+                  onboarded
+                    ? undefined
+                    : "Nothing to reset — this site has no schedule yet"
+                }
                 className="rounded-md border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-40"
               >
                 Reset
-              </button>
-              <button
-                onClick={() => setStrict(!strict)}
-                aria-pressed={strict}
-                title="Hard-gate AI-written reports (Rox) / advisory only (main)"
-                className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs transition-colors ${
-                  strict
-                    ? 'border-slate-900 bg-slate-900 text-white'
-                    : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-900'
-                }`}
-              >
-                <span
-                  className={`h-1.5 w-1.5 rounded-full ${strict ? 'bg-emerald-400' : 'bg-slate-300'}`}
-                />
-                Strict
               </button>
               {/* Contractors submit from their own portal; the owner reviews here. */}
               <ApprovalQueue />
@@ -161,11 +150,11 @@ export default function Home() {
             <div className="flex h-full w-full items-center justify-center text-xs text-slate-400">
               loading graph…
             </div>
-          ) : view === 'macro' ? (
+          ) : view === "macro" ? (
             <MacroHeatmap onOpenSite={(hotzone) => void loadSite(hotzone.id)} />
           ) : !hasGraph ? (
             <OnboardSite />
-          ) : microTab === 'procurement' ? (
+          ) : microTab === "procurement" ? (
             <AttributionLedger />
           ) : (
             <SiteTab />
@@ -179,35 +168,79 @@ export default function Home() {
   );
 }
 
-/**
- * The work surface, consolidated.
- *
- * Blueprint graph on the left, digital twin directly beside it on the right, the
- * schedule spanning the full width underneath, and the agent's verdict in a
- * right rail that only takes space when there is something to say — so the
- * blueprint is never covered by the panel describing it. This is the layout the
- * restructure was for: one primary thing per region instead of five panels
- * fighting over one viewport.
- */
 function SiteTab() {
+  const columnRef = useRef<HTMLDivElement>(null);
+  const bandRef = useRef<HTMLDivElement>(null);
+  const clearFocus = useJenga((s) => s.clearFocus);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const el = e.target as HTMLElement | null;
+      if (
+        el &&
+        (el.isContentEditable ||
+          ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName))
+      )
+        return;
+      clearFocus();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [clearFocus]);
+
+  const [topFrac, setTopFrac, resetTop] = useFraction(
+    "jenga.split.top",
+    0.66,
+    0.15,
+    0.85,
+  );
+  const [graphFrac, setGraphFrac, resetGraph] = useFraction(
+    "jenga.split.graph",
+    0.5,
+    0.2,
+    0.8,
+  );
+
   return (
-    <div className="flex h-full min-h-0 w-full flex-col">
+    <div ref={columnRef} className="flex h-full min-h-0 w-full flex-col">
       {/* Top band: blueprint + twin side by side, verdict/pipeline rail on the right. */}
-      <div className="flex min-h-0 flex-[2]">
-        <div className="min-w-0 flex-1 border-r border-slate-200">
-          <WorkGraph />
-        </div>
-        <div className="hidden min-w-0 flex-1 border-r border-slate-200 lg:block">
-          <StationView />
+      <div
+        className="flex min-h-0 shrink-0"
+        style={{ height: `${topFrac * 100}%` }}
+      >
+        <div ref={bandRef} className="flex min-w-0 flex-1">
+          <div
+            className="min-w-0 flex-1 lg:flex-none lg:w-(--graph-w)"
+            style={{ ["--graph-w" as string]: `${graphFrac * 100}%` }}
+          >
+            <WorkGraph />
+          </div>
+          <Splitter
+            orientation="vertical"
+            label="Resize graph and digital twin"
+            containerRef={bandRef}
+            onFraction={setGraphFrac}
+            onReset={resetGraph}
+            className="hidden lg:block"
+          />
+          <div className="hidden min-w-0 flex-1 lg:block">
+            <StationView />
+          </div>
         </div>
         <VerifyRail />
       </div>
 
-      {/* Renders nothing until a non-pending ticket is selected. */}
-      <SensorStrip />
+      <Splitter
+        orientation="horizontal"
+        label="Resize graph and schedule"
+        containerRef={columnRef}
+        onFraction={setTopFrac}
+        onReset={resetTop}
+      />
 
       {/* Schedule spans the full width along the bottom. */}
-      <div className="min-h-[210px] flex-1 border-t border-slate-200">
+      <div className="min-h-0 flex-1">
         <Timeline />
       </div>
     </div>
@@ -251,7 +284,7 @@ function OnboardSite() {
     <div className="h-full overflow-auto bg-white">
       <div className="mx-auto flex min-h-full max-w-lg flex-col justify-center px-6 py-12">
         <button
-          onClick={() => setView('macro')}
+          onClick={() => setView("macro")}
           className="mb-8 inline-flex items-center gap-1.5 self-start text-[11px] text-slate-400 transition-colors hover:text-slate-700"
         >
           <ArrowLeft size={12} />
@@ -262,9 +295,10 @@ function OnboardSite() {
           {siteName}
         </h2>
         <p className="mt-3 max-w-md text-sm leading-relaxed text-slate-500">
-          JENGA is watching this site from the municipal feed — permits and closures — but
-          has no schedule to verify against yet. Hand it a blueprint and it reads the work
-          packages and their dependencies straight off the document.
+          JENGA is watching this site from the municipal feed — permits and
+          closures — but has no schedule to verify against yet. Hand it a
+          blueprint and it reads the work packages and their dependencies
+          straight off the document.
         </p>
 
         {/* Primary path: instant value on the one site that ships onboarded. */}
@@ -273,7 +307,9 @@ function OnboardSite() {
           className="group mt-8 flex w-full items-center justify-between gap-4 rounded-lg bg-slate-900 px-4 py-3.5 text-left text-white transition-colors hover:bg-slate-800"
         >
           <span>
-            <span className="block text-sm font-medium">See it on the sample site</span>
+            <span className="block text-sm font-medium">
+              See it on the sample site
+            </span>
             <span className="mt-0.5 block text-[11px] text-slate-300">
               Eglinton West Station — a fully onboarded schedule
             </span>
@@ -291,8 +327,8 @@ function OnboardSite() {
           </h3>
           <DocumentUpload initialMode="spec" />
           <p className="mt-3 text-[10px] leading-relaxed text-slate-400">
-            Extraction is live — packages and dependencies are read from your document.
-            Committing them to a new site lands next.
+            Extraction is live — packages and dependencies are read from your
+            document. Committing them to a new site lands next.
           </p>
         </div>
       </div>

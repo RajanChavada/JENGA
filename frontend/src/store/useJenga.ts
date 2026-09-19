@@ -18,6 +18,8 @@ import type {
   Verdict, 
   Zone,
 } from '@/lib/types';
+import type { FocusOrigin } from '@/lib/focus';
+import { displayId } from '@/lib/format';
 
 /** Milliseconds of delay per topological rank during the cascade. */
 export const CASCADE_STEP_MS = 120;
@@ -137,9 +139,19 @@ interface JengaState {
   stageHistory: Record<string, StageEvent[]>;
 
   mode: ViewMode;
+  /**
+   * The focus: one task or one zone, never both. Every view frames it (graph fit,
+   * twin camera, schedule row) and clearing it resets them all. `focusOrigin` says
+   * which view the click came from, so the graph does not re-zoom on its own click.
+   */
   selectedTaskId: string | null;
   selectedZone: Zone | null;
-  /** Hard-gate AI-written reports (ours) vs. record the score and move on (main's). */
+  focusOrigin: FocusOrigin | null;
+  /**
+   * Hard-gate AI-written reports. Always on: there is no toggle any more, since
+   * the owner reviews every update anyway. Kept as state so each verify request
+   * still says `strict=true` explicitly.
+   */
   strict: boolean;
 
   verdict: Verdict | null;
@@ -156,7 +168,7 @@ interface JengaState {
   /** Whether the activity rail is open. */
   activityOpen: boolean;
   sideEffect: string | null;
-  /** Curing telemetry, keyed by ticket. Written by the poll in <SensorStrip>. */
+  /** Curing telemetry, keyed by ticket. Nothing polls it since SensorStrip was removed. */
   sensors: Record<string, SensorPayload>;
 
   /**
@@ -186,9 +198,9 @@ interface JengaState {
   setView: (v: SiteView) => void;
   setMicroTab: (t: MicroTab) => void;
   setMode: (m: ViewMode) => void;
-  setStrict: (v: boolean) => void;
-  selectTask: (id: string | null) => void;
-  selectZone: (z: Zone | null) => void;
+  selectTask: (id: string | null, origin?: FocusOrigin) => void;
+  selectZone: (z: Zone | null, origin?: FocusOrigin) => void;
+  clearFocus: () => void;
   clearVerdict: () => void;
   loadSensors: (id: string) => Promise<void>;
   restoreIdentity: () => void;
@@ -246,6 +258,7 @@ const EMPTY_SITE = {
   stageHistory: {},
   selectedTaskId: null,
   selectedZone: null,
+  focusOrigin: null,
   verdict: null,
   sideEffect: null,
   attributions: [],
@@ -404,6 +417,8 @@ export const useJenga = create<JengaState>((set, get) => ({
       attributions: [],
       sideEffect: null,
       selectedTaskId: null,
+      selectedZone: null,
+      focusOrigin: null,
       sensors: {},
     });
     // Nothing to re-seed on a site with no project: reloading here would pull
@@ -432,9 +447,21 @@ export const useJenga = create<JengaState>((set, get) => ({
   setView: (view) => set({ view }),
   setMicroTab: (microTab) => set({ microTab }),
   setMode: (mode) => set({ mode }),
-  setStrict: (strict) => set({ strict }),
-  selectTask: (selectedTaskId) => set({ selectedTaskId }),
-  selectZone: (selectedZone) => set({ selectedZone }),
+  // Task and zone are one focus: choosing either replaces the other, and choosing
+  // nothing clears both, so "deselect" always means the same reset.
+  selectTask: (id, origin = 'schedule') =>
+    set(
+      id
+        ? { selectedTaskId: id, selectedZone: null, focusOrigin: origin }
+        : { selectedTaskId: null, selectedZone: null, focusOrigin: null },
+    ),
+  selectZone: (zone, origin = 'twin') =>
+    set(
+      zone
+        ? { selectedZone: zone, selectedTaskId: null, focusOrigin: origin }
+        : { selectedTaskId: null, selectedZone: null, focusOrigin: null },
+    ),
+  clearFocus: () => set({ selectedTaskId: null, selectedZone: null, focusOrigin: null }),
   clearVerdict: () => set({ verdict: null, sideEffect: null }),
 
   /**
@@ -527,7 +554,7 @@ export const useJenga = create<JengaState>((set, get) => ({
     const ev = get().logActivity({
       source: 'agent',
       status: 'running',
-      title: `Verifying ${taskId} — 5-node pipeline`,
+      title: `Verifying ${displayId(taskId)} — 5-node pipeline`,
       detail: 'GPTZero authorship → vision → historical memory → telemetry → arbiter',
     });
     try {
@@ -535,12 +562,12 @@ export const useJenga = create<JengaState>((set, get) => ({
     } catch (err) {
       set({ busy: false });
       const message = err instanceof Error ? err.message : 'Submission failed.';
-      get().updateActivity(ev, { status: 'error', title: `Update on ${taskId} refused`, detail: message });
+      get().updateActivity(ev, { status: 'error', title: `Update on ${displayId(taskId)} refused`, detail: message });
       return message;
     }
     get().updateActivity(ev, {
       status: 'ok',
-      title: `Update on ${taskId} sent for owner review`,
+      title: `Update on ${displayId(taskId)} sent for owner review`,
       detail: 'The AI recommendation is attached for the owner to weigh.',
     });
     set({ busy: false, offline: api.isOffline() });
@@ -579,7 +606,7 @@ export const useJenga = create<JengaState>((set, get) => ({
     const ev = get().logActivity({
       source: 'agent',
       status: 'running',
-      title: `Propagating +${delayDays}d slip from ${taskId}`,
+      title: `Propagating +${delayDays}d slip from ${displayId(taskId)}`,
       detail: 'Recomputing CPM float and cascading downstream…',
     });
     const res = await api.dispute(taskId, delayDays, reason, get().tasks);
@@ -734,7 +761,7 @@ export const useJenga = create<JengaState>((set, get) => ({
     const updated = await api.actOnPurchaseOrder(poId, 'link', taskId);
     get().logActivity(
       updated
-        ? { source: 'zip', status: 'ok', title: `${poId} linked to ${taskId}` }
+        ? { source: 'zip', status: 'ok', title: `${displayId(poId)} linked to ${displayId(taskId)}` }
         : { source: 'zip', status: 'error', title: `Link of ${poId} did not land` },
     );
     if (!updated || get().activeProjectId !== site) return;

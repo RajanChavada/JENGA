@@ -1,9 +1,10 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { AlertTriangle } from 'lucide-react';
 import { STATE_STYLE } from '@/lib/theme';
+import { displayId } from '@/lib/format';
 import { useJenga, type StageEvent } from '@/store/useJenga';
 import type { Task } from '@/lib/types';
 
@@ -26,6 +27,17 @@ export function Timeline() {
   const baselineDuration = useJenga((s) => s.baselineDuration);
   const selectedTaskId = useJenga((s) => s.selectedTaskId);
   const selectTask = useJenga((s) => s.selectTask);
+  const focusOrigin = useJenga((s) => s.focusOrigin);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  // A task chosen in the graph or the twin can be off-screen here once the
+  // schedule is made short. Bring its row into view; a click on the row itself
+  // is already under the pointer, so that origin does not scroll.
+  useEffect(() => {
+    if (!selectedTaskId || focusOrigin === 'schedule') return;
+    const row = listRef.current?.querySelector(`[data-task-row="${CSS.escape(selectedTaskId)}"]`);
+    row?.scrollIntoView({ block: 'nearest' });
+  }, [selectedTaskId, focusOrigin]);
   const cascading = useJenga((s) => s.cascading);
 
   /**
@@ -113,7 +125,7 @@ export function Timeline() {
             </div>
           </div>
 
-          <div className="relative min-h-0 flex-1 overflow-y-auto">
+          <div ref={listRef} className="relative min-h-0 flex-1 overflow-y-auto">
             <div className="relative">
               {/* Gridlines, the completion marker and the slip band all live in one
                   overlay so they span every row and scroll with them. */}
@@ -162,7 +174,7 @@ export function Timeline() {
                   base={baseline[t.id]}
                   log={stageHistory[t.id]}
                   selected={t.id === selectedTaskId}
-                  onSelect={() => selectTask(t.id === selectedTaskId ? null : t.id)}
+                  onSelect={() => selectTask(t.id === selectedTaskId ? null : t.id, 'schedule')}
                   pct={pct}
                 />
               ))}
@@ -217,6 +229,7 @@ function Row({
     <button
       type="button"
       onClick={onSelect}
+      data-task-row={t.id}
       aria-pressed={selected}
       className={`relative flex w-full items-center text-left transition-colors ${
         selected ? 'bg-slate-100 ring-1 ring-inset ring-slate-300' : 'hover:bg-slate-50'
@@ -227,7 +240,7 @@ function Row({
         className="flex shrink-0 items-center gap-1.5 overflow-hidden px-2"
         style={{ width: LABEL_W }}
       >
-        <span className="shrink-0 font-mono text-[10px] text-slate-400">{t.id}</span>
+        <span className="shrink-0 font-mono text-[10px] text-slate-400">{displayId(t.id)}</span>
         <span className="truncate text-[10px] text-slate-700">{t.name}</span>
         <span
           className={`ml-auto shrink-0 font-mono text-[9px] ${
