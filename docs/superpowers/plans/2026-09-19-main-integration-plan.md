@@ -26,7 +26,9 @@ Files: `sql/schema.postgres.sql`, `sql/schema.sql` (from origin/main, brought in
 - `tickets.status` comment: add `'under_review' | 'disputed'`.
 - Add tables (our shapes, their conventions: TEXT ids, app-side UUIDs): `attributions`, `purchase_orders`, `evidence_verdicts` (ticket_id, report_id, verdict JSON, created_at).
 - Add nullable `tickets.zone TEXT, blueprint_x DOUBLE PRECISION, blueprint_y DOUBLE PRECISION, duration_days INTEGER, spec_text TEXT` — needed for spatial DAG and CPM.
-- Check: `psql -f` both files against docker `pgvector/pgvector:pg16` from our `docker-compose.yml` (port 5433) — clean apply, idempotent (`IF NOT EXISTS`).
+- Add `backend/sql/tiger.sql` (hypertable `sensor_metrics`, continuous aggregate `sensor_metrics_5min` + refresh policy, stretch `agent_telemetry`) — exact SQL in `docs/superpowers/specs/2026-09-19-tiger-data-sensor-stream-design.md`.
+- `docker-compose.yml`: image `pgvector/pgvector:pg16` → `timescale/timescaledb-ha:pg16` (ships `timescaledb` + `vector`), port 5433 unchanged.
+- Check: `psql -f` all three files against the local container — clean apply, idempotent (`IF NOT EXISTS`). Re-run against Tiger Cloud (`TIGER_SERVICE_URL`) once the service is Running.
 
 ### T2 — Storage driver: FastAPI reads/writes main's tables
 File: `backend/db.py`.
@@ -35,6 +37,7 @@ File: `backend/db.py`.
   `pending→blocked, active→in_progress, verified→done, under_review→under_review, disputed→disputed, blocked→blocked`.
 - Seed writes one `projects` row (`eglinton-west-station`) + one `branches` row (`main`), all tickets carry both FKs.
 - `JENGA_STORAGE=memory` path unchanged (demo safety net).
+- `DATABASE_URL` may be the Tiger Cloud DSN (Postgres + timescaledb) — relational tables and hypertables share one database. No code change needed for that; env only.
 - Check: `JENGA_STORAGE=postgres DATABASE_URL=postgresql+asyncpg://…:5433/jenga python test_cpm.py` passes; `curl /api/graph` returns 16 tasks; `select status,count(*) from tickets` matches.
 
 ### T3 — Multi-site: hotzone → project
@@ -76,6 +79,20 @@ Files: `frontend/src/app/page.tsx`, new `frontend/src/components/Stepper.tsx`.
 - Collapse `Timeline` and `AttributionLedger` into the Impact step; hide until first verdict.
 - Check: Playwright screenshots of each step; 0 console errors.
 
+### T10 — Tiger Data: curing sensor stream + fifth agent node (MLH track, Rox strengthener)
+Spec: `docs/superpowers/specs/2026-09-19-tiger-data-sensor-stream-design.md` (authoritative; this is the summary).
+Files: `backend/integrations/tiger.py` (new), `backend/sensors.py` (new), `backend/agent.py`, `backend/main.py`, `backend/test_sensors.py` (new), `frontend/src/components/SensorStrip.tsx` (new), `frontend/src/store/useJenga.ts`, `frontend/src/components/VerdictPanel.tsx`, `frontend/src/lib/types.ts`, `frontend/src/lib/api.ts`.
+- `tiger.py`: asyncpg pool on `TIGER_SERVICE_URL`; `insert_readings`, `recent_buckets` (10 s buckets over raw hypertable, last 2 min), `history_5min` (continuous aggregate), `curing_status` (2-min avg, threshold 10 °C). Mock deque backend when DSN unset/unreachable; `source: "tiger"|"mock"`.
+- `sensors.py`: lifespan asyncio loop, 2 s tick, temp+humidity per `in_progress` ticket; `POST /api/sensors/scenario/{id}` `{"mode":"normal"|"cold"}`; `JENGA_SENSORS=0` disables.
+- `agent.py`: node `sensor_check` between `historical_memory` and `arbiter`; arbiter rule: below-threshold + claim matches cure/pour/set → `DISPUTED`, reasoning quotes avg and threshold, `actionable_request` asks for maturity log. Trace card `4 · Site telemetry`; arbiter card renumbered 5. Frontend `synthesizeTrace` mirrors.
+- `GET /api/sensors/{ticket_id}` → `{live, history, status}`.
+- `SensorStrip.tsx`: under DAG for selected non-pending task; inline SVG sparkline, avg temp, threshold dashed line, `tiger|mock` badge whose tooltip shows the two SQL queries, "cold snap" button. Polls every 2 s.
+- Check: `JENGA_SENSORS=0 JENGA_OFFLINE=1 python test_agent.py` still 10/10; `python test_sensors.py` 4/4; Playwright: select P-106 → click cold snap → wait 25 s → submit "pour cured" report → DISPUTED with "10 °C" in reasoning.
+- Against Tiger (when Running): `SELECT count(*) FROM sensor_metrics` > 0 after 60 s; `sensor_metrics_5min` returns rows after refresh.
+
+### T11 — Stretch: agent telemetry hypertable (only if T10 done before 02:00 EDT)
+- Time each LangGraph node; `executemany` into `agent_telemetry` post-run; `GET /api/telemetry/summary` (`time_bucket('1 minute')` avg latency per node, last hour); small "pipeline p50 latency" sparkline in VerdictPanel header. Cut without regret.
+
 ### T9 — Verify, commit, push, deploy
 - `npm run build`, `python test_cpm.py`, `JENGA_OFFLINE=1 python test_agent.py`, Playwright golden flow.
 - Commit per task on `feat/light-theme-map-zip-rox`, trailer `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`. Open PR into `main` titled "Integrate JENGA verification agent with main schema"; PR body lists the schema additions and the Strict Mode compromise for teammate review.
@@ -83,7 +100,9 @@ Files: `frontend/src/app/page.tsx`, new `frontend/src/components/Stepper.tsx`.
 
 ## Order and parallelism
 
-T1 → T2 (sequential, schema first). T3, T4, T5, T7 parallel after T2. T6 after T5. T8 after T3. T9 last. Estimated 6–8 focused hours with subagents on T3/T4/T7.
+T1 → T2 (sequential, schema first). T3, T4, T5, T7, T10 parallel after T2 (T10's backend half can start after T1). T6 after T5. T8 after T3 and T10 (stepper hosts SensorStrip in the Submit step). T11 only if T10 done by 02:00 EDT. T9 last. Estimated 8–10 focused hours with subagents on T3/T4/T7/T10.
+
+Sponsor coverage: Rox (agent, T5 + T10 conflicting sources), Browserbase (T7), Tiger Data (T10), Backboard (T4), Zip (T6). Baseten: no viable slot tonight — would need to host vision/extraction on a Baseten endpoint; revisit only if OpenAI key never arrives (Baseten OpenAI-compatible endpoint could replace it in `vision.py` with a base-URL swap).
 
 ## Cut (and why)
 
@@ -95,5 +114,6 @@ T1 → T2 (sequential, schema first). T3, T4, T5, T7 parallel after T2. T6 after
 ## Still on the user
 
 - Browserbase key + project ID (booth). Optional OpenAI key for live vision. Optional Zip key.
+- Tiger Cloud `db-87722` is **Configuring** (2026-09-19 evening; hostname NXDOMAIN until Running). When Running, copy `TIMESCALE_SERVICE_URL` from `~/Downloads/tiger-cloud-db-87722-credentials.env` into `backend/.env` as `TIGER_SERVICE_URL` (and as `DATABASE_URL` for unified storage). If the hostname changed, re-download the creds file.
 - Prize selection lock 2:00 PM today.
 - Rotate GPTZero and Backboard keys after the event.
