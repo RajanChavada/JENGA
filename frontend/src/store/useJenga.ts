@@ -163,6 +163,17 @@ interface JengaState {
   expeditePO: (poId: string) => Promise<void>;
   markPoReceived: (poId: string) => Promise<void>;
   linkPoToTask: (poId: string, taskId: string) => Promise<void>;
+  /**
+   * Hand extracted work packages to the procurement agent, which creates a real
+   * purchase order on Zip staging (or the local-ledger fallback). Logs the run
+   * in the activity rail and mirrors the new PO into the ledger. Returns the
+   * full result so the caller can render the agent's trace, or null if the
+   * request never landed.
+   */
+  agentProcure: (
+    packages: api.ProposedTask[],
+    filename: string,
+  ) => Promise<api.AgentProcurementResult | null>;
 
   /** Append an activity entry; returns its id so the caller can resolve it. */
   logActivity: (e: Omit<AgentEvent, 'id' | 'ts'>) => string;
@@ -602,6 +613,45 @@ export const useJenga = create<JengaState>((set, get) => ({
     set((s) => ({
       purchaseOrders: s.purchaseOrders.map((po) => (po.id === poId ? updated : po)),
     }));
+  },
+
+  async agentProcure(packages, filename) {
+    const site = get().activeProjectId;
+    const ev = get().logActivity({
+      source: 'zip',
+      status: 'running',
+      title: `Agent creating procurement from ${filename}`,
+      detail: `Planning materials for ${packages.length} work package${packages.length === 1 ? '' : 's'} → vendor → Zip purchase order…`,
+    });
+    const result = await api.createProcurementViaAgent(packages, filename);
+    get().updateActivity(
+      ev,
+      !result
+        ? {
+            status: 'error',
+            title: 'Procurement agent did not reach the backend',
+            detail: 'Is the backend running on :8000?',
+          }
+        : result.live
+          ? {
+              status: 'ok',
+              title: `Zip PO ${result.po_number ?? result.po_id} created on staging`,
+              detail: result.detail,
+            }
+          : {
+              status: 'warn',
+              title: `PO ${result.po_number} drafted on the local ledger`,
+              detail: result.detail,
+            },
+    );
+    if (!result) return null;
+    // Mirror the new PO into the Procurement tab, unless the user has switched
+    // sites while the agent ran — the PO belongs to the site it was raised from.
+    if (result.purchase_order && get().activeProjectId === site) {
+      const po = result.purchase_order;
+      set((s) => ({ purchaseOrders: [po, ...s.purchaseOrders] }));
+    }
+    return result;
   },
 
   async linkPoToTask(poId, taskId) {

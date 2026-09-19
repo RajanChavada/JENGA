@@ -2,9 +2,9 @@
 
 import { useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { FileUp, Loader2, TriangleAlert } from 'lucide-react';
+import { FileUp, Loader2, TriangleAlert, Zap } from 'lucide-react';
 import * as api from '@/lib/api';
-import type { ExtractedTasks, ParsedDoc } from '@/lib/api';
+import type { AgentProcurementResult, ExtractedTasks, ParsedDoc } from '@/lib/api';
 import { ZONE_LABEL } from '@/lib/theme';
 import type { Zone } from '@/lib/types';
 import { useJenga } from '@/store/useJenga';
@@ -42,18 +42,38 @@ export function DocumentUpload({
   const [mode, setMode] = useState<Mode>(initialMode);
   const logActivity = useJenga((s) => s.logActivity);
   const updateActivity = useJenga((s) => s.updateActivity);
+  const agentProcure = useJenga((s) => s.agentProcure);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [doc, setDoc] = useState<ParsedDoc | null>(null);
   const [extracted, setExtracted] = useState<ExtractedTasks | null>(null);
   const [dragging, setDragging] = useState(false);
+  /** The procurement agent's run for the current extraction, while/after it happens. */
+  const [procuring, setProcuring] = useState(false);
+  const [procured, setProcured] = useState<AgentProcurementResult | null>(null);
+  const [procureError, setProcureError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  async function procure() {
+    if (!extracted || extracted.tasks.length === 0 || procuring) return;
+    setProcuring(true);
+    setProcureError(null);
+    const result = await agentProcure(extracted.tasks, extracted.filename);
+    setProcuring(false);
+    if (result) setProcured(result);
+    else
+      setProcureError(
+        'The procurement agent did not reach the backend. Is it running on :8000?',
+      );
+  }
 
   async function handle(file: File) {
     setBusy(true);
     setError(null);
     setDoc(null);
     setExtracted(null);
+    setProcured(null);
+    setProcureError(null);
     const ev = logActivity({
       source: 'documents',
       status: 'running',
@@ -135,6 +155,8 @@ export function DocumentUpload({
                 setDoc(null);
                 setExtracted(null);
                 setError(null);
+                setProcured(null);
+                setProcureError(null);
               }}
               className={`rounded-md px-2.5 py-1 text-[11px] transition-colors ${
                 mode === m
@@ -347,6 +369,101 @@ export function DocumentUpload({
                 <p className="mt-2 text-[10px] text-slate-400">
                   Proposal only — the live schedule is unchanged.
                 </p>
+
+                {/* The agentic beat: hand the packages to the procurement agent,
+                    which plans materials and raises a real PO on Zip staging. */}
+                {!procured && (
+                  <button
+                    onClick={() => void procure()}
+                    disabled={procuring}
+                    className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md bg-slate-900 px-2.5 py-1.5 text-[11px] font-medium text-white transition-colors hover:bg-slate-800 disabled:opacity-60"
+                  >
+                    {procuring ? (
+                      <>
+                        <Loader2 size={11} className="animate-spin" />
+                        Agent planning materials → vendor → Zip…
+                      </>
+                    ) : (
+                      <>
+                        <Zap size={11} />
+                        Create procurement via agent
+                      </>
+                    )}
+                  </button>
+                )}
+                {procureError && (
+                  <p className="mt-2 flex items-start gap-1.5 rounded-md border border-red-300 bg-red-50 p-2 text-[10px] text-red-700">
+                    <TriangleAlert size={12} className="mt-0.5 shrink-0" />
+                    {procureError}
+                  </p>
+                )}
+                {procured && (
+                  <div
+                    className={`mt-2 rounded-md border p-2 ${
+                      procured.live
+                        ? 'border-emerald-300 bg-emerald-50'
+                        : 'border-amber-300 bg-amber-50'
+                    }`}
+                  >
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span
+                        className={`text-[11px] font-medium ${
+                          procured.live ? 'text-emerald-800' : 'text-amber-800'
+                        }`}
+                      >
+                        {procured.live
+                          ? `Zip PO ${procured.po_number ?? procured.po_id} created`
+                          : `PO ${procured.po_number} drafted locally`}
+                      </span>
+                      <span
+                        className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] ${
+                          procured.live
+                            ? 'bg-emerald-100 text-emerald-700'
+                            : 'bg-amber-100 text-amber-700'
+                        }`}
+                      >
+                        {procured.live ? 'live on Zip staging' : 'local ledger only'}
+                      </span>
+                    </div>
+                    <p
+                      className={`mt-1 text-[10px] leading-relaxed ${
+                        procured.live ? 'text-emerald-700' : 'text-amber-700'
+                      }`}
+                    >
+                      {procured.detail}
+                    </p>
+                    {/* The agent's steps, so the reasoning is visible, not just
+                        the conclusion — same contract as the verdict trace. */}
+                    <ol className="mt-1.5 flex flex-col gap-1">
+                      {procured.steps.map((s, i) => (
+                        <li key={i} className="flex items-start gap-1.5">
+                          <span
+                            className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${
+                              {
+                                ok: 'bg-emerald-500',
+                                warn: 'bg-amber-500',
+                                bad: 'bg-red-500',
+                                info: 'bg-slate-400',
+                              }[s.signal]
+                            }`}
+                          />
+                          <div className="min-w-0">
+                            <p className="text-[10px] font-medium leading-snug text-slate-700">
+                              {s.title}
+                            </p>
+                            <p className="text-[9px] leading-relaxed text-slate-500">
+                              {s.detail}
+                            </p>
+                          </div>
+                        </li>
+                      ))}
+                    </ol>
+                    <p className="mt-1.5 text-[9px] text-slate-400">
+                      Mirrored into the Procurement tab
+                      {procured.live && procured.po_id ? ` · Zip id ${procured.po_id}` : ''}.
+                    </p>
+                  </div>
+                )}
               </>
             )}
           </motion.div>

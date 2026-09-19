@@ -424,6 +424,11 @@ async def _add_purchase_orders(rows, project_id=DEFAULT_PROJECT_ID):
         await s.commit()
 
 
+async def add_purchase_order(row, project_id=DEFAULT_PROJECT_ID):
+    """One PO onto the ledger — the procurement agent's mirror write."""
+    await _add_purchase_orders([row], project_id)
+
+
 async def tasks(project_id=DEFAULT_PROJECT_ID):
     if STORAGE == "memory":
         return [_task_shape(r) for r in _mem["tasks"] if _scoped(r, project_id)]

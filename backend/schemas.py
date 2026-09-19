@@ -240,6 +240,33 @@ class POActionRequest(BaseModel):
     task_id: str | None = None
 
 
+class AgentProcurementRequest(BaseModel):
+    """Work packages the user asked the procurement agent to buy for."""
+
+    packages: list[ProposedTask]
+    #: The document the packages were extracted from, quoted in the trace.
+    filename: str | None = None
+
+
+class AgentProcurementResponse(BaseModel):
+    """What the procurement agent did, trace included.
+
+    `live=True` means a real purchase order now exists on Zip staging under
+    `po_id`; False means the one fallback ran and the PO is on the local ledger
+    only. `steps` reuses the verification trace shape so the UI renders both
+    agents with one component vocabulary.
+    """
+
+    ok: bool
+    live: bool
+    po_id: str | None = None
+    po_number: str | None = None
+    vendor: str | None = None
+    detail: str
+    steps: list[VerdictStep] = []
+    purchase_order: PurchaseOrder | None = None
+
+
 class DisputeResponse(BaseModel):
     tasks: list[Task]
     critical_path: list[str]

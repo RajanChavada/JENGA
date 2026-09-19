@@ -19,6 +19,7 @@ JENGA's one-fallback-per-integration rule so the demo never breaks.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import os
 import re
@@ -39,6 +40,8 @@ ZIP_BASE = (
     or "https://staging-api.zip.com"
 ).rstrip("/")
 ZIP_KEY = os.getenv("ZIP_API_KEY")
+#: API version header the official ziphq-mcp client pins on every call.
+ZIP_API_VERSION = os.getenv("ZIP_API_VERSION", "2024-06-06")
 #: Collection path for purchase orders. Expedite = PATCH `{ZIP_PO_PATH}/{id}`.
 ZIP_PO_PATH = os.getenv("ZIP_PO_PATH", "/purchase_orders")
 #: Path for intake requests (used only for reads today).
@@ -51,7 +54,11 @@ def zip_live() -> bool:
 
 
 def _headers() -> dict[str, str]:
-    return {"Zip-Api-Key": ZIP_KEY or "", "Content-Type": "application/json"}
+    return {
+        "Zip-Api-Key": ZIP_KEY or "",
+        "Zip-Api-Version": ZIP_API_VERSION,
+        "Content-Type": "application/json",
+    }
 
 
 def _map_po(raw: dict) -> dict:
@@ -94,6 +101,124 @@ async def fetch_purchase_orders() -> list[dict] | None:
             return [_map_po(p) for p in items]
 
     return await safe_call("zip.fetch_purchase_orders", _go, None)
+
+
+def _unwrap(payload: dict) -> dict:
+    """Zip write responses sometimes envelope the entity as `{"data": {...}}`."""
+    inner = payload.get("data")
+    return inner if isinstance(inner, dict) else payload
+
+
+async def _live_call(label: str, make_coro, fallback):
+    """`safe_call` without the JENGA_OFFLINE gate, for the procurement agent.
+
+    JENGA_OFFLINE keeps the demo's *read* paths on canned data so dead wifi
+    never blanks a panel. The agent's procurement write is different: it is an
+    explicit user action against a key the operator deliberately configured,
+    and short-circuiting it to the mock under the offline flag would report a
+    "created" PO that exists nowhere. Same discipline otherwise — one timeout,
+    one try/except, one fallback, never raises.
+    """
+    try:
+        return await asyncio.wait_for(make_coro(), timeout=10)
+    except Exception as exc:
+        log.warning(
+            "%s: call failed (%s: %s), using fallback", label, type(exc).__name__, exc
+        )
+        return fallback
+
+
+async def fetch_vendors() -> list[dict] | None:
+    """Live-read vendors (`GET /vendors` — ziphq-mcp's `zip_search_vendors`).
+
+    Returns `[{id, name, currency}]`, or None when no key is set / the call fails.
+    """
+    if not ZIP_KEY:
+        return None
+
+    async def _go():
+        async with httpx.AsyncClient(timeout=8) as client:
+            res = await client.get(
+                f"{ZIP_BASE}/vendors", params={"page_size": 100}, headers=_headers()
+            )
+            res.raise_for_status()
+            payload = res.json()
+            items = payload.get("list") or payload.get("data") or payload.get("vendors") or []
+            return [
+                {
+                    "id": str(v.get("id")),
+                    "name": str(v.get("name") or "vendor"),
+                    "currency": v.get("currency"),
+                }
+                for v in items
+                if v.get("id")
+            ]
+
+    return await _live_call("zip.fetch_vendors", _go, None)
+
+
+async def create_purchase_order(
+    vendor_id: str, currency: str, po_number: str | None = None
+) -> dict | None:
+    """Create a PO live on Zip — the operation ziphq-mcp's `zip_create_purchase_order` wraps.
+
+    `POST {ZIP_PO_PATH}` with the `{"data": {...}}` envelope the official client
+    sends. Returns the created PO body (must carry an `id`) or None. Never raises.
+    """
+    if not ZIP_KEY:
+        return None
+
+    async def _go():
+        data: dict = {"vendor_id": vendor_id, "currency": currency}
+        if po_number:
+            data["po_number"] = po_number
+        async with httpx.AsyncClient(timeout=8) as client:
+            res = await client.post(
+                f"{ZIP_BASE}{ZIP_PO_PATH}", json={"data": data}, headers=_headers()
+            )
+            res.raise_for_status()
+            body = _unwrap(res.json() if res.content else {})
+            log.warning("zip: LIVE created PO %s", body.get("id") or po_number)
+            return body
+
+    return await _live_call("zip.create_purchase_order", _go, None)
+
+
+async def add_purchase_order_line_items(po_id: str, items: list[dict]) -> dict | None:
+    """Attach line items to a PO (ziphq-mcp's `zip_add_purchase_order_line_items`).
+
+    Each item requires `line_type` (0=item) and `rate` (string number); quantity
+    and description are optional per the tool schema. Returns the response body
+    or None on failure — the PO already exists either way.
+    """
+    if not ZIP_KEY:
+        return None
+
+    async def _go():
+        async with httpx.AsyncClient(timeout=8) as client:
+            res = await client.post(
+                f"{ZIP_BASE}{ZIP_PO_PATH}/{po_id}/line_items",
+                json={"data": items},
+                headers=_headers(),
+            )
+            res.raise_for_status()
+            return res.json() if res.content else {}
+
+    return await _live_call("zip.add_po_line_items", _go, None)
+
+
+async def fetch_purchase_order(po_id: str) -> dict | None:
+    """Read one PO back (`GET {ZIP_PO_PATH}/{id}`) to confirm a write landed."""
+    if not ZIP_KEY:
+        return None
+
+    async def _go():
+        async with httpx.AsyncClient(timeout=8) as client:
+            res = await client.get(f"{ZIP_BASE}{ZIP_PO_PATH}/{po_id}", headers=_headers())
+            res.raise_for_status()
+            return _unwrap(res.json())
+
+    return await _live_call("zip.fetch_purchase_order", _go, None)
 
 
 async def _first_vendor_id(client: httpx.AsyncClient) -> str | None:

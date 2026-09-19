@@ -298,6 +298,55 @@ async function upload<T>(path: string, file: File): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** One step of the procurement agent's trace. Same shape as a verdict step. */
+export interface AgentStep {
+  node: string;
+  title: string;
+  detail: string;
+  signal: 'ok' | 'warn' | 'bad' | 'info';
+}
+
+export interface AgentProcurementResult {
+  ok: boolean;
+  /** True only when a real purchase order now exists on Zip staging. */
+  live: boolean;
+  po_id: string | null;
+  po_number: string | null;
+  vendor: string | null;
+  detail: string;
+  steps: AgentStep[];
+  purchase_order: PurchaseOrder | null;
+}
+
+/**
+ * Ask the procurement agent to buy for a set of extracted work packages.
+ *
+ * Returns null on any failure rather than a fixture: like the PO actions above,
+ * this is a discrete user action that creates something real (a Zip staging
+ * purchase order), and a fake success would be the confident-wrong-answer
+ * failure JENGA argues against. Longer timeout — the agent makes several Zip
+ * calls (and possibly an LLM call) before it answers.
+ */
+export async function createProcurementViaAgent(
+  packages: ProposedTask[],
+  filename?: string,
+): Promise<AgentProcurementResult | null> {
+  if (offline) return null;
+  try {
+    const res = await fetch(`${BASE}/api/procurement/agent-create`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ packages, filename: filename ?? null }),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return (await res.json()) as AgentProcurementResult;
+  } catch (err) {
+    console.warn('[jenga] agent procurement did not land.', err);
+    return null;
+  }
+}
+
 /** Extract raw text from an uploaded PDF / txt / md. */
 export function parseDocument(file: File): Promise<ParsedDoc> {
   return upload<ParsedDoc>('/api/documents/parse', file);

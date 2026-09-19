@@ -13,11 +13,14 @@ import browserbase_hotzones
 import cpm_engine
 import db
 import documents
+import procurement_agent
 import seed as seed_module
 import sensors
 from integrations import tiger, zip_api
 from integrations.gptzero import FLAG_THRESHOLD
 from schemas import (
+    AgentProcurementRequest,
+    AgentProcurementResponse,
     AttributionEntry,
     DisputeRequest,
     DisputeResponse,
@@ -452,6 +455,27 @@ async def act_on_purchase_order(po_id: str, body: POActionRequest):
     if updated is None:
         raise HTTPException(404, f"unknown purchase order {po_id}")
     return updated
+
+
+@app.post("/api/procurement/agent-create", response_model=AgentProcurementResponse)
+async def agent_create_procurement(body: AgentProcurementRequest):
+    """The procurement agent, triggered by a user on extracted work packages.
+
+    Plans a bill of materials, picks a vendor, and creates a real purchase
+    order on Zip staging (the same operations ziphq-mcp's write tools expose);
+    without a key — or if staging refuses — the one fallback records the PO on
+    the local ledger instead. Either way the created PO is mirrored into the
+    ledger so the Procurement tab shows it immediately, and the full step
+    trace is returned so the UI can show the agent's reasoning.
+    """
+    if not body.packages:
+        raise HTTPException(422, "at least one work package is required")
+    result = await procurement_agent.run(
+        [p.model_dump() for p in body.packages], body.filename
+    )
+    if result.get("purchase_order"):
+        await db.add_purchase_order(result["purchase_order"])
+    return result
 
 
 @app.get("/api/zip/status")
