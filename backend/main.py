@@ -402,5 +402,23 @@ async def zip_status():
 
 @app.post("/api/reset")
 async def reset(project_id: str = db.DEFAULT_PROJECT_ID):
+    """Re-seed a project. Only the default one, until seeds carry their own ids.
+
+    The parameter exists because the graph route takes one, but there is exactly
+    one seed payload and its ticket ids are fixed (`P-101`…`P-116`). Replaying it
+    under a second project fails two different ways, and the quiet one is worse:
+    on Postgres the insert collides with the global `tickets.id` primary key and
+    500s, while in memory mode — the default — `db.reset` clears the whole store
+    unscoped, so the call returns 200 having silently wiped the site the demo
+    runs on. Refuse instead, and say what would actually unblock it.
+    """
+    if project_id != db.DEFAULT_PROJECT_ID:
+        raise HTTPException(
+            501,
+            f"Only {db.DEFAULT_PROJECT_ID} can be re-seeded. Seeding {project_id} "
+            "needs per-project ticket ids (T4 — project creation); until then "
+            "this would wipe the default project in memory mode and violate the "
+            "tickets primary key on postgres.",
+        )
     await seed_module.seed(project_id)
     return {"ok": True, "project_id": project_id}

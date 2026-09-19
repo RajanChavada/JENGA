@@ -39,11 +39,14 @@ export default function Home() {
   const siteName = useJenga((s) => s.activeSiteName);
   const [show3d, setShow3d] = useState(true);
 
-  // Two different questions. `onboarded` is about the site — a hotzone with no
-  // project behind it gets the onboarding pitch, not an error — and answering
-  // it from the project id rather than the task count keeps the chrome steady
-  // while a graph is still in flight. `hasGraph` is about this render: whether
-  // there is anything for the work-package surfaces to draw.
+  // Two different questions, and they can disagree: a project that exists but
+  // has no tickets yet is onboarded with nothing to draw.
+  //
+  // `hasGraph` answers "is there anything to show?" and every work-package
+  // surface follows it, so the header, the body, the twin and the ledger can
+  // never contradict each other. `onboarded` answers "does this pin have a
+  // project at all?", which is a different fact and the only one Reset cares
+  // about.
   const onboarded = useJenga((s) => s.activeProjectId !== null);
   const hasGraph = useJenga((s) => s.tasks.length > 0);
 
@@ -57,7 +60,11 @@ export default function Home() {
         <div className="flex items-baseline gap-3">
           <h1 className="text-sm font-semibold tracking-tight text-slate-900">JENGA</h1>
           <span className="text-[11px] text-slate-500">
-            {siteName} · {onboarded ? 'Structural Package' : 'Not onboarded'}
+            {/* Follows the body, with one exception: a graph still in flight
+                counts as present. Nothing is contradicted while the panel below
+                says "loading", and assuming otherwise flashes "Not onboarded"
+                on every page load — including into the server-rendered HTML. */}
+            {siteName} · {hasGraph || loading ? 'Structural Package' : 'Not onboarded'}
           </span>
           {offline && (
             <span className="rounded border border-slate-300 px-1.5 py-0.5 font-mono text-[9px] text-slate-500">
@@ -91,7 +98,13 @@ export default function Home() {
           </button>
           <button
             onClick={() => void reset()}
-            className="rounded-md border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 transition-colors hover:bg-slate-50"
+            // There is no graph to put back on a site with no project behind
+            // it, and the store refuses the reload rather than pulling the
+            // default project's tasks onto someone else's pin. Say so here
+            // instead of leaving a button that looks live and does nothing.
+            disabled={!onboarded}
+            title={onboarded ? undefined : 'Nothing to reset — this site has no schedule yet'}
+            className="rounded-md border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-40"
           >
             Reset
           </button>
@@ -142,13 +155,17 @@ export default function Home() {
           )}
         </div>
 
-        {view === 'micro' && onboarded && show3d && (
+        {/* Both rails follow the body, not the site. If a project ever comes
+            back with no tickets, `onboarded` and `hasGraph` disagree, and
+            gating these on the site would leave a digital twin and a delay
+            ledger flanking a panel that says the site has no drawings. */}
+        {view === 'micro' && hasGraph && show3d && (
           <div className="h-full w-[360px] shrink-0 border-l border-slate-200">
             <StationView />
           </div>
         )}
 
-        {view === 'micro' && onboarded && <AttributionLedger />}
+        {view === 'micro' && hasGraph && <AttributionLedger />}
       </div>
     </main>
   );
@@ -210,6 +227,13 @@ function OnboardSite() {
           <div className="mt-2">
             <DocumentUpload initialMode="spec" />
           </div>
+          {/* The uploader above says "does not modify the live graph", and it
+              means it. Saying so out here too, rather than letting the heading
+              promise a site that the next click cannot deliver. */}
+          <p className="mt-3 border-t border-slate-200 pt-3 text-[10px] leading-relaxed text-slate-400">
+            Extraction is live — the packages and dependencies you get back are read
+            from your document. Committing them to a new site lands next.
+          </p>
         </div>
       </div>
     </div>
