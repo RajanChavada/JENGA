@@ -180,7 +180,7 @@ class ProposedTask(BaseModel):
 class ExtractedTasks(BaseModel):
     filename: str
     tasks: list[ProposedTask]
-    source: Literal["llm", "offline"]
+    source: Literal["llm", "offline", "rejected"]
     notes: str
 
 

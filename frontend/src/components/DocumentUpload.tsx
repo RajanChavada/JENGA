@@ -179,54 +179,75 @@ export function DocumentUpload({
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
-            className="rounded-lg border border-slate-200 bg-slate-50 p-2.5"
+            className={`rounded-lg border p-2.5 ${
+              extracted.source === 'rejected'
+                ? 'border-amber-300 bg-amber-50'
+                : 'border-slate-200 bg-slate-50'
+            }`}
           >
-            <div className="flex items-baseline justify-between">
-              <span className="font-mono text-[11px] text-slate-700">
-                {extracted.filename}
-              </span>
-              <span
-                className={`rounded px-1.5 py-0.5 text-[9px] ${
-                  extracted.source === 'llm'
-                    ? 'bg-emerald-100 text-emerald-700'
-                    : 'bg-slate-200 text-slate-500'
-                }`}
-              >
-                {extracted.source === 'llm' ? 'model-extracted' : 'offline extraction'}
-              </span>
-            </div>
-            {extracted.notes && (
-              <p className="mt-1 text-[10px] text-slate-500">{extracted.notes}</p>
-            )}
-
-            <p className="mt-2 text-[10px] uppercase tracking-wider text-slate-400">
-              {extracted.tasks.length} proposed work package
-              {extracted.tasks.length === 1 ? '' : 's'}
-            </p>
-            <div className="mt-1 flex max-h-52 flex-col gap-1 overflow-auto">
-              {extracted.tasks.map((t, i) => (
-                <div
-                  key={i}
-                  className="rounded-md border border-slate-200 bg-white p-1.5"
-                >
-                  <div className="flex items-baseline justify-between gap-2">
-                    <span className="truncate text-[11px] text-slate-700">{t.name}</span>
-                    <span className="shrink-0 font-mono text-[9px] text-slate-400">
-                      {t.duration_days}d
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2 text-[9px] text-slate-400">
-                    <span>{ZONE_LABEL[t.zone as Zone] ?? t.zone}</span>
-                    {t.depends_on.length > 0 && (
-                      <span>after {t.depends_on.join(', ')}</span>
-                    )}
-                  </div>
+            {extracted.source === 'rejected' ? (
+              // Not a spec — say so plainly instead of mining a resume for phrases.
+              <div className="flex items-start gap-2">
+                <TriangleAlert size={13} className="mt-0.5 shrink-0 text-amber-600" />
+                <div>
+                  <p className="text-[11px] font-medium text-amber-800">
+                    {extracted.filename} doesn’t look like a construction document
+                  </p>
+                  <p className="mt-1 text-[10px] leading-relaxed text-amber-700">
+                    {extracted.notes}
+                  </p>
                 </div>
-              ))}
-            </div>
-            <p className="mt-2 text-[10px] text-slate-400">
-              Proposal only — the live schedule is unchanged.
-            </p>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-baseline justify-between">
+                  <span className="font-mono text-[11px] text-slate-700">
+                    {extracted.filename}
+                  </span>
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[9px] ${
+                      extracted.source === 'llm'
+                        ? 'bg-emerald-100 text-emerald-700'
+                        : 'bg-slate-200 text-slate-500'
+                    }`}
+                  >
+                    {extracted.source === 'llm' ? 'model-extracted' : 'offline extraction'}
+                  </span>
+                </div>
+                {extracted.notes && (
+                  <p className="mt-1 text-[10px] text-slate-500">{extracted.notes}</p>
+                )}
+
+                <p className="mt-2 text-[10px] uppercase tracking-wider text-slate-400">
+                  {extracted.tasks.length} proposed work package
+                  {extracted.tasks.length === 1 ? '' : 's'}
+                </p>
+                <div className="mt-1 flex max-h-52 flex-col gap-1 overflow-auto">
+                  {extracted.tasks.map((t, i) => (
+                    <div
+                      key={i}
+                      className="rounded-md border border-slate-200 bg-white p-1.5"
+                    >
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="truncate text-[11px] text-slate-700">{t.name}</span>
+                        <span className="shrink-0 font-mono text-[9px] text-slate-400">
+                          {t.duration_days}d
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 text-[9px] text-slate-400">
+                        <span>{ZONE_LABEL[t.zone as Zone] ?? t.zone}</span>
+                        {t.depends_on.length > 0 && (
+                          <span>after {t.depends_on.join(', ')}</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-2 text-[10px] text-slate-400">
+                  Proposal only — the live schedule is unchanged.
+                </p>
+              </>
+            )}
           </motion.div>
         )}
       </AnimatePresence>

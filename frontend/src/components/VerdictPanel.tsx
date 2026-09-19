@@ -2,7 +2,7 @@
 
 import { AnimatePresence, motion } from 'framer-motion';
 import { AlertTriangle, Check, Cpu, HelpCircle, Loader2, X } from 'lucide-react';
-import { sensorCard, thresholdLabel, windowLabel } from '@/lib/fixtures';
+import { thresholdLabel } from '@/lib/fixtures';
 import { useJenga } from '@/store/useJenga';
 import type { Verdict, VerdictStep } from '@/lib/types';
 
@@ -114,28 +114,12 @@ export function VerdictPanel() {
         >
           <Header verdict={verdict} onClose={clear} />
 
-          <AgentTrace verdict={verdict} />
-
-          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-4 lg:grid-cols-5">
-            <Column title="Blueprint specification" body={verdict.evidence.spec} />
-            <ClaimColumn verdict={verdict} />
-            <Column
-              title="Visual analysis"
-              body={verdict.evidence.visual}
-              footer={visionFooter(verdict)}
-              footerTone={
-                verdict.vision.matches_claim === null
-                  ? 'warn'
-                  : verdict.vision.matches_claim
-                    ? 'ok'
-                    : 'bad'
-              }
-            />
-            <Column title="Historical comparison" body={verdict.evidence.historical} />
-            <TelemetryColumn verdict={verdict} />
-          </div>
-
+          {/* The conclusion leads — it is the point of the panel. */}
           <Reasoning verdict={verdict} />
+
+          {/* One strip, five sources: the agent's read on each, folded into the
+              evidence itself rather than repeated as a separate trace row. */}
+          <EvidenceStrip verdict={verdict} />
 
           {sideEffect && (
             <p className="mt-3 rounded-lg border border-sky-200 bg-sky-50 p-2 text-xs text-sky-800">
@@ -181,105 +165,136 @@ export function VerdictPanel() {
 /* Agent trace — the Rox beat made visible                                    */
 /* -------------------------------------------------------------------------- */
 
-const SIGNAL_DOT: Record<VerdictStep['signal'], string> = {
+type Signal = VerdictStep['signal'];
+
+const SIGNAL_DOT: Record<Signal, string> = {
   ok: 'bg-emerald-500',
   warn: 'bg-amber-500',
   bad: 'bg-red-500',
-  info: 'bg-slate-400',
+  info: 'bg-slate-300',
 };
 
-/**
- * Derive the five-node trace from the verdict when the backend didn't send one
- * (pure-fixtures / offline mode), so the agent's reasoning is always visible.
- */
-function synthesizeTrace(v: Verdict): VerdictStep[] {
-  const vc = Math.round(v.vision.confidence * 100);
-  const m = v.vision.matches_claim;
+const SIGNAL_TEXT: Record<Signal, string> = {
+  ok: 'text-emerald-700',
+  warn: 'text-amber-700',
+  bad: 'text-red-700',
+  info: 'text-slate-400',
+};
 
-  const vision: VerdictStep =
-    m === true
-      ? { node: 'vision_analysis', title: '2 · Visual analysis', detail: `Photo is consistent with the claim (${vc}% confidence).`, signal: 'ok' }
-      : m === false
-        ? { node: 'vision_analysis', title: '2 · Visual analysis', detail: `Photo contradicts the claim (${vc}% confidence).`, signal: 'bad' }
-        : { node: 'vision_analysis', title: '2 · Visual analysis', detail: `Image cannot establish the claim (${vc}% confidence).`, signal: 'warn' };
+interface SourceRead {
+  title: string;
+  /** The one-line finding — the agent's read on this source. */
+  finding: string | null;
+  signal: Signal;
+  detail: string;
+}
 
-  const telemetry: VerdictStep = {
-    node: 'sensor_check',
-    title: '4 · Site telemetry',
-    ...sensorCard(v.sensor),
-  };
-
-  /*
-    The backend picks between two DISPUTED lines by the name of the arbiter rule
-    that fired, and `schemas.Verdict` strips that name from the response, so
-    this mirror cannot reproduce the choice. It renders the generic line for
-    every dispute. Guessing the telemetry line from a cold sensor block would be
-    the wrong trade: every active ticket streams telemetry, so a contradicted
-    photograph on a ticket that happens to be cold would be credited to the
-    thermometer. Under-claiming here is the safe direction — the same reason
-    `asAdvisory` refuses to derive a status offline.
-  */
-  const arbiter: VerdictStep = {
-    node: 'arbiter',
-    title: '5 · Arbiter',
-    detail:
-      v.status === 'APPROVED'
-        ? 'Sources agree — approved.'
-        : v.status === 'DISPUTED'
-          ? 'Sources conflict, evidence legible — disputed.'
-          : 'Evidence insufficient — declined to rule, routed to a human.',
-    signal: v.status === 'APPROVED' ? 'ok' : v.status === 'DISPUTED' ? 'bad' : 'warn',
-  };
-
+/** The five evidence sources, each with the agent's read folded in. */
+function sourceReads(v: Verdict): SourceRead[] {
   const auth = authorship(v);
+  const vc = Math.round(v.vision.confidence * 100);
+  const vSignal: Signal =
+    v.vision.matches_claim === null ? 'warn' : v.vision.matches_claim ? 'ok' : 'bad';
 
   return [
     {
-      node: 'gptzero_gate',
-      title: '1 · Authorship gate',
-      detail: auth.traceDetail,
-      signal: auth.tone,
-    },
-    vision,
-    {
-      node: 'historical_memory',
-      title: '3 · Historical memory',
-      detail: v.evidence.historical
-        ? 'Compared against similar past work packages.'
-        : 'No close historical match found.',
+      title: 'Blueprint spec',
+      finding: null,
       signal: 'info',
+      detail: v.evidence.spec,
     },
-    telemetry,
-    arbiter,
+    {
+      title: 'Contractor claim',
+      finding: auth.footer,
+      signal: auth.tone,
+      detail: v.evidence.claim,
+    },
+    {
+      title: 'Visual analysis',
+      finding:
+        v.vision.matches_claim === null
+          ? `Cannot establish · ${vc}%`
+          : v.vision.matches_claim
+            ? `Consistent · ${vc}%`
+            : `Contradicts · ${vc}%`,
+      signal: vSignal,
+      detail: v.evidence.visual,
+    },
+    {
+      title: 'Historical',
+      finding: null,
+      signal: 'info',
+      detail: v.evidence.historical || 'No close historical match found.',
+    },
+    telemetryRead(v),
   ];
 }
 
-function AgentTrace({ verdict }: { verdict: Verdict }) {
-  const steps = verdict.trace && verdict.trace.length ? verdict.trace : synthesizeTrace(verdict);
+/** Telemetry as a source read, mirroring the sensor payload's own verdict. */
+function telemetryRead(v: Verdict): SourceRead {
+  const s = v.sensor;
+  if (!s || !s.samples || s.avg_temp_c === null) {
+    return {
+      title: 'Site telemetry',
+      finding: 'No readings',
+      signal: 'info',
+      detail: 'No curing telemetry on record for this ticket.',
+    };
+  }
+  const where = s.source === 'tiger' ? 'Tiger Data' : 'Simulated store';
+  const floor = s.min_samples || 10;
+  const low = s.min_temp_c === null ? '' : `, low ${s.min_temp_c.toFixed(1)} °C`;
+  const detail = `Curing thermocouples: avg ${s.avg_temp_c.toFixed(1)} °C${low} across ${s.samples} reading${s.samples === 1 ? '' : 's'} · ${where}.`;
+  if (s.samples < floor) {
+    return {
+      title: 'Site telemetry',
+      finding: `${s.samples}/${floor} readings — too sparse`,
+      signal: 'info',
+      detail,
+    };
+  }
+  return {
+    title: 'Site telemetry',
+    finding: s.below_threshold
+      ? `Below ${thresholdLabel(s.threshold_c)} °C minimum`
+      : `At/above ${thresholdLabel(s.threshold_c)} °C minimum`,
+    signal: s.below_threshold ? 'bad' : 'ok',
+    detail,
+  };
+}
+
+/**
+ * The five evidence sources as one comparison strip. Replaces the old separate
+ * trace row plus five cards: the agent's read on each source lives in that
+ * source's own column, so the reasoning is legible without repeating itself.
+ */
+function EvidenceStrip({ verdict }: { verdict: Verdict }) {
+  const reads = sourceReads(verdict);
   return (
-    <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
-      <div className="mb-2 flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-slate-400">
+    <section className="mt-3 overflow-hidden rounded-lg border border-slate-200">
+      <div className="flex items-center gap-1.5 border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-[10px] uppercase tracking-wider text-slate-400">
         <Cpu size={12} />
         Agent resolution · four evidence sources, one arbiter
       </div>
-      <ol className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
-        {steps.map((s, i) => (
-          <motion.li
-            key={s.node + i}
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: i * 0.06 }}
-            className="relative rounded-md border border-slate-200 bg-white p-2"
-          >
+      <div className="grid grid-cols-1 divide-y divide-slate-200 sm:grid-cols-2 sm:divide-y-0 lg:grid-cols-5 lg:divide-x">
+        {reads.map((r) => (
+          <div key={r.title} className="min-w-0 px-3 py-2.5">
             <div className="flex items-center gap-1.5">
-              <span className={`h-2 w-2 shrink-0 rounded-full ${SIGNAL_DOT[s.signal]}`} />
-              <span className="text-[10px] font-semibold text-slate-700">{s.title}</span>
+              {r.signal !== 'info' && (
+                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${SIGNAL_DOT[r.signal]}`} />
+              )}
+              <h4 className="text-[10px] uppercase tracking-wider text-slate-400">{r.title}</h4>
             </div>
-            <p className="mt-1 text-[10px] leading-relaxed text-slate-500">{s.detail}</p>
-          </motion.li>
+            {r.finding && (
+              <p className={`mt-1 text-[10px] font-medium ${SIGNAL_TEXT[r.signal]}`}>
+                {r.finding}
+              </p>
+            )}
+            <p className="mt-1 text-[10px] leading-relaxed text-slate-600">{r.detail}</p>
+          </div>
         ))}
-      </ol>
-    </div>
+      </div>
+    </section>
   );
 }
 
@@ -331,84 +346,6 @@ function authorship(v: Verdict): {
   };
 }
 
-function ClaimColumn({ verdict }: { verdict: Verdict }) {
-  const a = authorship(verdict);
-  return (
-    <Column
-      title="Contractor claim"
-      body={verdict.evidence.claim}
-      footer={a.footer}
-      footerTone={a.tone}
-    />
-  );
-}
-
-/**
- * The fifth evidence source. Shows the readings themselves rather than
- * repeating the trace card's sentence, and reads the floor and the window off
- * the payload — the backend clamps the window to the current curing regime, so
- * "2 min" is a guess that is usually wrong.
- *
- * The three non-empty footers name their source; the empty one does not. A
- * verdict whose telemetry read *failed* arrives with no source at all and
- * Pydantic fills in `mock`, so a badge there would be asserting something the
- * verdict does not know.
- */
-function TelemetryColumn({ verdict }: { verdict: Verdict }) {
-  const s = verdict.sensor;
-  if (!s || !s.samples || s.avg_temp_c === null) {
-    return (
-      <Column
-        title="Site telemetry"
-        body="No curing telemetry on record for this ticket."
-        footer="No readings — telemetry did not weigh on this verdict"
-      />
-    );
-  }
-
-  const where = s.source === 'tiger' ? 'Tiger Data' : 'Simulated store';
-  const window = windowLabel(s.window_s);
-  const threshold = thresholdLabel(s.threshold_c);
-  const floor = s.min_samples || 10;
-  const low = s.min_temp_c === null ? '' : `, low ${s.min_temp_c.toFixed(1)} °C`;
-  const body = `Curing thermocouples on the pour: average ${s.avg_temp_c.toFixed(1)} °C${low} across ${s.samples} reading${s.samples === 1 ? '' : 's'} in the last ${window}.`;
-
-  if (s.samples < floor) {
-    // Neutral, not amber, so this column and the `info` trace card two rows up
-    // give the same fact the same weight. The trace card's signal comes off the
-    // wire from `_sensor_card`, so matching had to happen here — the backend
-    // ruled that "too few readings to judge" is neither a warning about the
-    // pour nor a clean bill of health, and this column may not overrule it.
-    return (
-      <Column
-        title="Site telemetry"
-        body={body}
-        footer={`${where} · ${s.samples} of ${floor} readings — too sparse to judge`}
-      />
-    );
-  }
-  return (
-    <Column
-      title="Site telemetry"
-      body={body}
-      footer={
-        s.below_threshold
-          ? `${where} · below the ${threshold} °C curing minimum`
-          : `${where} · at or above the ${threshold} °C curing minimum`
-      }
-      footerTone={s.below_threshold ? 'bad' : 'ok'}
-    />
-  );
-}
-
-function visionFooter(v: Verdict): string {
-  const pct = Math.round(v.vision.confidence * 100);
-  if (v.vision.matches_claim === null) return `Cannot establish — ${pct}% confidence`;
-  return v.vision.matches_claim
-    ? `Consistent with claim — ${pct}% confidence`
-    : `Contradicts claim — ${pct}% confidence`;
-}
-
 function Header({ verdict, onClose }: { verdict: Verdict; onClose: () => void }) {
   const s = STATUS_STYLE[verdict.status];
   return (
@@ -433,33 +370,6 @@ function Header({ verdict, onClose }: { verdict: Verdict; onClose: () => void })
       <button onClick={onClose} className="text-slate-400 hover:text-slate-700">
         <X size={16} />
       </button>
-    </div>
-  );
-}
-
-function Column({
-  title,
-  body,
-  footer,
-  footerTone = 'neutral',
-}: {
-  title: string;
-  body: string;
-  footer?: string;
-  footerTone?: 'ok' | 'bad' | 'warn' | 'neutral';
-}) {
-  const tone = {
-    ok: 'text-emerald-700',
-    bad: 'text-red-700',
-    warn: 'text-amber-700',
-    neutral: 'text-slate-500',
-  }[footerTone];
-
-  return (
-    <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5">
-      <h4 className="mb-1 text-[10px] uppercase tracking-wider text-slate-400">{title}</h4>
-      <p className="text-[11px] leading-relaxed text-slate-700">{body}</p>
-      {footer && <p className={`mt-1.5 text-[10px] ${tone}`}>{footer}</p>}
     </div>
   );
 }

@@ -95,6 +95,7 @@ interface JengaState {
 
   load: (projectId?: string) => Promise<void>;
   loadSite: (hotzoneId: string) => Promise<void>;
+  loadSample: () => Promise<void>;
   reset: () => Promise<void>;
   setView: (v: SiteView) => void;
   setMode: (m: ViewMode) => void;
@@ -205,6 +206,22 @@ export const useJenga = create<JengaState>((set, get) => ({
     });
 
     if (projectId) await get().load(projectId);
+  },
+
+  /**
+   * Instant value from a not-onboarded pin: drop the empty state and load the
+   * one fully-onboarded site JENGA ships, so a first-time visitor sees the graph
+   * working before they have any drawings of their own.
+   */
+  async loadSample() {
+    set({
+      ...EMPTY_SITE,
+      view: 'micro',
+      activeProjectId: DEFAULT_PROJECT_ID,
+      activeSiteName: DEFAULT_SITE_NAME,
+      loading: true,
+    });
+    await get().load(DEFAULT_PROJECT_ID);
   },
 
   async reset() {

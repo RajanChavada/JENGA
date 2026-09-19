@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { ArrowLeft, ListChecks, Waypoints, Workflow } from 'lucide-react';
+import { ArrowLeft, ArrowRight } from 'lucide-react';
 import { WorkGraph } from '@/components/WorkGraph';
 import { Timeline } from '@/components/Timeline';
 import { VerdictPanel, AgentRunning } from '@/components/VerdictPanel';
@@ -12,13 +12,6 @@ import { MacroHeatmap } from '@/components/MacroHeatmap';
 import { SensorStrip } from '@/components/SensorStrip';
 import { DocumentUpload } from '@/components/DocumentUpload';
 import { useJenga } from '@/store/useJenga';
-
-/** What the extractor gives back, spelled out on the empty site. */
-const ONBOARD_YIELD = [
-  { icon: ListChecks, title: 'Work packages', detail: 'name, zone, duration' },
-  { icon: Workflow, title: 'Dependencies', detail: 'what blocks what' },
-  { icon: Waypoints, title: 'Critical path', detail: 'float and slip' },
-];
 
 // Three.js touches window during module init, so keep it off the server.
 const StationView = dynamic(
@@ -175,65 +168,62 @@ export default function Home() {
 /**
  * What a hotzone with no project behind it opens into.
  *
- * This is the pitch, not an error page: the map watches every site in the city
- * from the outside, and a blueprint is the one thing that turns one of them
- * into a graph JENGA can verify against. So it names the site, says what is
- * missing and why, and hands over the same extractor the spec tab already uses.
+ * Not an error page: the map watches every site from the municipal feed, and a
+ * blueprint is the one thing that turns one into a graph JENGA can verify. So it
+ * offers the fastest path to value first — the sample site, already onboarded —
+ * and the real path second: hand this site its own drawings.
  */
 function OnboardSite() {
   const siteName = useJenga((s) => s.activeSiteName);
   const setView = useJenga((s) => s.setView);
+  const loadSample = useJenga((s) => s.loadSample);
 
   return (
-    <div className="h-full overflow-auto bg-slate-50 p-6">
-      <div className="mx-auto max-w-xl">
+    <div className="h-full overflow-auto bg-white">
+      <div className="mx-auto flex min-h-full max-w-lg flex-col justify-center px-6 py-12">
         <button
           onClick={() => setView('macro')}
-          className="mb-3 flex items-center gap-1 text-[11px] text-slate-500 transition-colors hover:text-slate-900"
+          className="mb-8 inline-flex items-center gap-1.5 self-start text-[11px] text-slate-400 transition-colors hover:text-slate-700"
         >
           <ArrowLeft size={12} />
-          Back to the Toronto map
+          Toronto map
         </button>
 
-        <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-          <p className="text-[10px] uppercase tracking-wider text-slate-400">
-            Not onboarded
-          </p>
-          <h2 className="mt-1 text-lg font-semibold tracking-tight text-slate-900">
-            {siteName}
-          </h2>
-          <p className="mt-2 text-[11px] leading-relaxed text-slate-600">
-            JENGA is watching this hotzone from the outside — permits, closures and the
-            municipal feed. There is no dependency graph behind it yet, because nobody
-            has handed it the drawings. Upload the spec or blueprint and it reads the
-            work packages and the dependencies between them straight off the document.
-          </p>
+        <h2 className="text-2xl font-semibold tracking-tight text-slate-900">
+          {siteName}
+        </h2>
+        <p className="mt-3 max-w-md text-sm leading-relaxed text-slate-500">
+          JENGA is watching this site from the municipal feed — permits and closures — but
+          has no schedule to verify against yet. Hand it a blueprint and it reads the work
+          packages and their dependencies straight off the document.
+        </p>
 
-          <div className="mt-4 grid grid-cols-3 gap-2">
-            {ONBOARD_YIELD.map(({ icon: Icon, title, detail }) => (
-              <div
-                key={title}
-                className="rounded-lg border border-slate-200 bg-slate-50 p-2.5"
-              >
-                <Icon size={13} className="text-slate-400" />
-                <p className="mt-1.5 text-[11px] text-slate-700">{title}</p>
-                <p className="text-[10px] leading-snug text-slate-400">{detail}</p>
-              </div>
-            ))}
-          </div>
+        {/* Primary path: instant value on the one site that ships onboarded. */}
+        <button
+          onClick={() => void loadSample()}
+          className="group mt-8 flex w-full items-center justify-between gap-4 rounded-lg bg-slate-900 px-4 py-3.5 text-left text-white transition-colors hover:bg-slate-800"
+        >
+          <span>
+            <span className="block text-sm font-medium">See it on the sample site</span>
+            <span className="mt-0.5 block text-[11px] text-slate-300">
+              Eglinton West Station — a fully onboarded schedule
+            </span>
+          </span>
+          <ArrowRight
+            size={16}
+            className="shrink-0 text-slate-400 transition-transform group-hover:translate-x-0.5 group-hover:text-white"
+          />
+        </button>
 
-          <h3 className="mt-5 text-[10px] uppercase tracking-wider text-slate-400">
-            Onboard from blueprint
+        {/* Secondary path: onboard this specific site from its drawings. */}
+        <div className="mt-8">
+          <h3 className="mb-2.5 text-xs font-medium text-slate-700">
+            Or onboard {siteName} from a blueprint
           </h3>
-          <div className="mt-2">
-            <DocumentUpload initialMode="spec" />
-          </div>
-          {/* The uploader above says "does not modify the live graph", and it
-              means it. Saying so out here too, rather than letting the heading
-              promise a site that the next click cannot deliver. */}
-          <p className="mt-3 border-t border-slate-200 pt-3 text-[10px] leading-relaxed text-slate-400">
-            Extraction is live — the packages and dependencies you get back are read
-            from your document. Committing them to a new site lands next.
+          <DocumentUpload initialMode="spec" />
+          <p className="mt-3 text-[10px] leading-relaxed text-slate-400">
+            Extraction is live — packages and dependencies are read from your document.
+            Committing them to a new site lands next.
           </p>
         </div>
       </div>

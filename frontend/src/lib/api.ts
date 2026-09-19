@@ -222,7 +222,7 @@ export interface ProposedTask {
 export interface ExtractedTasks {
   filename: string;
   tasks: ProposedTask[];
-  source: 'llm' | 'offline';
+  source: 'llm' | 'offline' | 'rejected';
   notes: string;
 }
 

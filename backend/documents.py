@@ -251,6 +251,42 @@ DOCUMENT {filename}:
         return None
 
 
+# Construction-specific vocabulary. Deliberately excludes words that also read as
+# software/business jargon (platform, services, architecture, column) so a resume
+# or an invoice cannot masquerade as a spec.
+_CONSTRUCTION_TERMS = (
+    "rebar", "formwork", "form release", "pour", "concrete", "slab", "excavat",
+    "subgrade", "guideway", "mezzanine", "shoring", "aggregate", "curing", "lrt",
+    "foundation", "piling", "pile", "tunnel", "reinforc", "cast-in-place",
+    "tie-in", "mpa", "blueprint", "trackbed", "track bed", "platform edge",
+    "honeycomb", "spec section", "backfill", "grading",
+)
+
+
+def _looks_like_construction(text: str) -> bool:
+    """Cheap relevance gate: a real spec or site report hits several distinct
+    construction terms; a resume, invoice or article hits none of them."""
+    low = text.lower()
+    hits = {term for term in _CONSTRUCTION_TERMS if term in low}
+    return len(hits) >= 3
+
+
 async def propose_tasks(filename: str, text: str) -> dict:
-    """Use AI extraction when available; otherwise fall back to deterministic heuristics."""
+    """Use AI extraction when available; otherwise fall back to deterministic heuristics.
+
+    Documents that do not read as a construction spec or site report are rejected
+    outright rather than mined for phrases — extracting "work packages" from a
+    resume is worse than extracting nothing.
+    """
+    if not _looks_like_construction(text):
+        return {
+            "filename": filename,
+            "tasks": [],
+            "source": "rejected",
+            "notes": (
+                "This does not read as a construction specification or site report, so no "
+                "work packages were extracted. Upload a blueprint, spec sheet, or daily "
+                "field report for this site."
+            ),
+        }
     return await _llm_tasks(filename, text) or _fallback_tasks(filename, text)
