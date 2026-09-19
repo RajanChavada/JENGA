@@ -73,7 +73,7 @@ export function verify(
         transcript: sub.transcript,
       }),
     },
-    () => fx.verdictFor(submissionId, tasks),
+    () => fx.verdictFor(submissionId, tasks, strict),
   );
 }
 
@@ -159,6 +159,6 @@ export function verifyWithText(
   return call<Verdict>(
     `/api/tasks/${taskId}/verify?strict=${strict}`,
     { method: 'POST', body: JSON.stringify({ report_text: reportText }) },
-    () => fx.verdictForTask(taskId, tasks),
+    () => fx.verdictForTask(taskId, tasks, strict),
   );
 }

@@ -51,16 +51,7 @@ export function VerdictPanel() {
 
           <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-4">
             <Column title="Blueprint specification" body={verdict.evidence.spec} />
-            <Column
-              title="Contractor claim"
-              body={verdict.evidence.claim}
-              footer={
-                verdict.gptzero.flagged
-                  ? `⚠ ${Math.round(verdict.gptzero.ai_probability * 100)}% AI-generated — auto-approval blocked`
-                  : `${Math.round(verdict.gptzero.ai_probability * 100)}% AI probability — human-authored`
-              }
-              footerTone={verdict.gptzero.flagged ? 'bad' : 'ok'}
-            />
+            <ClaimColumn verdict={verdict} />
             <Column
               title="Visual analysis"
               body={verdict.evidence.visual}
@@ -134,7 +125,6 @@ const SIGNAL_DOT: Record<VerdictStep['signal'], string> = {
  * (pure-fixtures / offline mode), so the agent's reasoning is always visible.
  */
 function synthesizeTrace(v: Verdict): VerdictStep[] {
-  const ai = Math.round(v.gptzero.ai_probability * 100);
   const vc = Math.round(v.vision.confidence * 100);
   const m = v.vision.matches_claim;
 
@@ -157,14 +147,14 @@ function synthesizeTrace(v: Verdict): VerdictStep[] {
     signal: v.status === 'APPROVED' ? 'ok' : v.status === 'DISPUTED' ? 'bad' : 'warn',
   };
 
+  const auth = authorship(v);
+
   return [
     {
       node: 'gptzero_gate',
       title: '1 · Authorship gate',
-      detail: v.gptzero.flagged
-        ? `Report scores ${ai}% AI-authorship — flagged, cannot auto-approve on prose.`
-        : `Report scores ${ai}% AI-authorship — reads as first-hand.`,
-      signal: v.gptzero.flagged ? 'bad' : 'ok',
+      detail: auth.traceDetail,
+      signal: auth.tone,
     },
     vision,
     {
@@ -205,6 +195,53 @@ function AgentTrace({ verdict }: { verdict: Verdict }) {
         ))}
       </ol>
     </div>
+  );
+}
+
+/**
+ * How the authorship score is being *used*, which is a different question from
+ * how high it is. Strict mode blocks on a flagged report; lenient mode records
+ * it and lets the other sources rule. So nothing here may claim the score
+ * blocked anything when the verdict came back APPROVED — that contradiction,
+ * rendered in red under an approval, is the one thing this panel must not do.
+ * Footer and trace card share this so they cannot drift apart.
+ */
+function authorship(v: Verdict): {
+  footer: string;
+  tone: 'ok' | 'warn' | 'bad';
+  traceDetail: string;
+} {
+  const pct = Math.round(v.gptzero.ai_probability * 100);
+  if (!v.gptzero.flagged) {
+    return {
+      footer: `${pct}% AI probability — human-authored`,
+      tone: 'ok',
+      traceDetail: `Report scores ${pct}% AI-authorship — reads as first-hand.`,
+    };
+  }
+  if (v.status === 'APPROVED') {
+    return {
+      footer: `⚠ ${pct}% AI-generated — advisory only, did not block approval`,
+      tone: 'warn',
+      traceDetail: `Report scores ${pct}% AI-authorship — flagged, advisory only — not gating this verdict.`,
+    };
+  }
+  return {
+    footer: `⚠ ${pct}% AI-generated — auto-approval blocked`,
+    tone: 'bad',
+    traceDetail: `Report scores ${pct}% AI-authorship — flagged, cannot auto-approve on prose.`,
+  };
+}
+
+function ClaimColumn({ verdict }: { verdict: Verdict }) {
+  const a = authorship(verdict);
+  return (
+    <Column
+      title="Contractor claim"
+      body={verdict.evidence.claim}
+      footer={a.footer}
+      footerTone={a.tone}
+    />
   );
 }
 

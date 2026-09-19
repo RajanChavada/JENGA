@@ -190,15 +190,51 @@ function historicalFor(task: Task | undefined): string {
   return `${task.id} scheduled day ${task.es}–${task.ef} (${task.duration_days}d), ${float}. Logged state at submission: ${task.state}. ${task.depends_on.length ? `Predecessors ${task.depends_on.join(', ')} closed out prior.` : 'No predecessor activities.'}`;
 }
 
+/**
+ * Offline mirror of the backend arbiter's lenient mode: rule 1 is demoted, so
+ * rules 2–4 decide and the score is appended as an advisory. Without this the
+ * Strict toggle would be inert whenever the API is down — which is the state
+ * the whole fixture layer exists to survive. Keep in step with `_decide` in
+ * backend/agent.py.
+ */
+function asAdvisory(v: Verdict): Verdict {
+  if (!v.gptzero.flagged) return v;
+
+  const insufficient =
+    v.vision.matches_claim === null || v.vision.confidence < 0.5;
+  const status: VerdictStatus = insufficient
+    ? 'UNDER_REVIEW'
+    : v.vision.matches_claim
+      ? 'APPROVED'
+      : 'DISPUTED';
+  const pct = Math.round(v.gptzero.ai_probability * 100);
+
+  return {
+    ...v,
+    status,
+    confidence:
+      status === 'UNDER_REVIEW'
+        ? Math.min(v.vision.confidence, 0.49)
+        : v.vision.confidence,
+    reasoning: `${v.reasoning.trimEnd()} GPTZero advisory: ${pct}% AI`,
+    actionable_request:
+      status === 'UNDER_REVIEW' ? v.actionable_request : null,
+  };
+}
+
 /** Maps a submission's `expected` block onto the contract's Verdict shape. */
-export function verdictFor(submissionId: string, tasks?: Task[]): Verdict {
+export function verdictFor(
+  submissionId: string,
+  tasks?: Task[],
+  strict = true,
+): Verdict {
   const sub = RAW.find((s) => s.id === submissionId);
   if (!sub) throw new Error(`Unknown submission ${submissionId}`);
   const e = sub.expected;
   const seedTask = (seed.tasks as SeedTask[]).find((t) => t.id === sub.task_id);
   const liveTask = tasks?.find((t) => t.id === sub.task_id);
 
-  return {
+  const verdict: Verdict = {
     task_id: sub.task_id,
     status: e.status,
     confidence: e.confidence,
@@ -217,6 +253,8 @@ export function verdictFor(submissionId: string, tasks?: Task[]): Verdict {
       historical: historicalFor(liveTask),
     },
   };
+
+  return strict ? verdict : asAdvisory(verdict);
 }
 
 /** Procurement fallout the agent noticed in the report text, if any. */
@@ -341,9 +379,13 @@ export const CASCADE_DEMO = evidence.cascade_demo as unknown as {
  * Fallback verdict keyed by task rather than by submission, for the upload path
  * where the user brought their own document instead of picking a demo case.
  */
-export function verdictForTask(taskId: string, tasks?: Task[]): Verdict {
+export function verdictForTask(
+  taskId: string,
+  tasks?: Task[],
+  strict = true,
+): Verdict {
   const sub = RAW.find((s) => s.task_id === taskId);
-  if (sub) return verdictFor(sub.id, tasks);
+  if (sub) return verdictFor(sub.id, tasks, strict);
 
   const task = tasks?.find((t) => t.id === taskId);
   return {
