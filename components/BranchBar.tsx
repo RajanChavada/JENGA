@@ -3,13 +3,24 @@
 import { useRole } from "@/lib/role-context";
 import type { Branch } from "@/lib/types";
 
+interface ProjectOption {
+  ID: string;
+  NAME: string;
+}
+
 export function BranchBar({
+  projects,
+  currentProjectId,
+  onSelectProjectAction,
   branches,
   currentBranchId,
   onSelectBranchAction,
   onMergeAction,
   merging,
 }: {
+  projects: ProjectOption[];
+  currentProjectId: string | null;
+  onSelectProjectAction: (id: string) => void;
   branches: Branch[];
   currentBranchId: string | null;
   onSelectBranchAction: (id: string) => void;
@@ -22,6 +33,21 @@ export function BranchBar({
 
   return (
     <div className="flex flex-wrap items-center gap-3 rounded-lg border p-3">
+      <label className="flex items-center gap-2 text-sm">
+        Project
+        <select
+          className="rounded border px-2 py-1"
+          value={currentProjectId ?? ""}
+          onChange={(e) => onSelectProjectAction(e.target.value)}
+        >
+          {projects.map((p) => (
+            <option key={p.ID} value={p.ID}>
+              {p.NAME}
+            </option>
+          ))}
+        </select>
+      </label>
+
       <label className="flex items-center gap-2 text-sm">
         Viewing as
         <select

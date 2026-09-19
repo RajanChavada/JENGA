@@ -13,7 +13,7 @@ import {
 import type { Edge, Node, NodeChange } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { Dependency, Ticket, TicketStatus } from "@/lib/types";
-import { layoutTimeline, MIN_BAR_WIDTH, PX_PER_DAY, ROW_HEIGHT } from "./dagLayout";
+import { layoutTimeline, MIN_BAR_WIDTH, ROW_HEIGHT } from "./dagLayout";
 
 const STATUS_COLOR: Record<TicketStatus, string> = {
   blocked: "#9ca3af",
@@ -27,20 +27,56 @@ const BAR_HEIGHT = 22;
 const NODE_HEIGHT = 64;
 const RULER_HEIGHT = 28;
 
-function DateRuler({ minDate, maxDate }: { minDate: Date; maxDate: Date }) {
+type TickGranularity = "week" | "month" | "year";
+
+function pickGranularity(totalDays: number): TickGranularity {
+  if (totalDays <= 60) return "week";
+  if (totalDays <= 730) return "month";
+  return "year";
+}
+
+function stepTick(d: Date, granularity: TickGranularity): Date {
+  const next = new Date(d);
+  if (granularity === "week") next.setUTCDate(next.getUTCDate() + 7);
+  else if (granularity === "month") next.setUTCMonth(next.getUTCMonth() + 1);
+  else next.setUTCFullYear(next.getUTCFullYear() + 1);
+  return next;
+}
+
+function formatTick(d: Date, granularity: TickGranularity): string {
+  if (granularity === "year") return String(d.getUTCFullYear());
+  if (granularity === "month")
+    return d.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+}
+
+function DateRuler({
+  minDate,
+  maxDate,
+  pxPerDay,
+}: {
+  minDate: Date;
+  maxDate: Date;
+  pxPerDay: number;
+}) {
   const { x, zoom } = useViewport();
 
   const ticks = useMemo(() => {
+    const totalDays = Math.round((maxDate.getTime() - minDate.getTime()) / 86_400_000);
+    const granularity = pickGranularity(totalDays);
+
+    let cursor = new Date(minDate);
+    if (granularity === "week") cursor.setUTCDate(cursor.getUTCDate() - 1);
+    else if (granularity === "month") cursor = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth(), 1));
+    else cursor = new Date(Date.UTC(cursor.getUTCFullYear(), 0, 1));
+
+    const end = stepTick(maxDate, granularity);
     const days: Date[] = [];
-    const cursor = new Date(minDate);
-    cursor.setUTCDate(cursor.getUTCDate() - 1);
-    const end = new Date(maxDate);
-    end.setUTCDate(end.getUTCDate() + 7);
     while (cursor <= end) {
       days.push(new Date(cursor));
-      cursor.setUTCDate(cursor.getUTCDate() + 7);
+      cursor = stepTick(cursor, granularity);
     }
-    return days;
+    return { days, granularity };
   }, [minDate, maxDate]);
 
   return (
@@ -48,16 +84,16 @@ function DateRuler({ minDate, maxDate }: { minDate: Date; maxDate: Date }) {
       className="pointer-events-none absolute inset-x-0 top-0 z-10 border-b bg-white/90 dark:bg-zinc-900/90"
       style={{ height: RULER_HEIGHT }}
     >
-      {ticks.map((d) => {
+      {ticks.days.map((d) => {
         const dayOffset = Math.round((d.getTime() - minDate.getTime()) / 86_400_000);
-        const left = x + dayOffset * PX_PER_DAY * zoom;
+        const left = x + dayOffset * pxPerDay * zoom;
         return (
           <div
             key={d.toISOString()}
             className="absolute top-0 h-full border-l pl-1 text-[11px] leading-7 text-zinc-500"
             style={{ left }}
           >
-            {d.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+            {formatTick(d, ticks.granularity)}
           </div>
         );
       })}
@@ -68,13 +104,6 @@ function DateRuler({ minDate, maxDate }: { minDate: Date; maxDate: Date }) {
 const iconButtonClass =
   "flex h-8 w-8 items-center justify-center rounded border bg-white/90 text-zinc-700 shadow-sm hover:bg-zinc-50 dark:bg-zinc-900/90 dark:text-zinc-200 dark:hover:bg-zinc-800";
 
-/**
- * Replaces React Flow's default bottom-left zoom/fit/lock Controls with a
- * single bottom-right row (zoom in, zoom out, reset to the default fitted
- * timeline view). Needs useReactFlow(), which only works inside <ReactFlow>,
- * so — like DateRuler — this is a child of it rather than living inline in
- * DagView.
- */
 function GraphControls() {
   const { zoomIn, zoomOut, fitView } = useReactFlow();
 
@@ -232,10 +261,11 @@ export function DagView({
         onNodesChange={handleNodesChange}
         onNodeClick={(_, node) => onSelectAction(node.id)}
         proOptions={{ hideAttribution: true }}
+        minZoom={0.05}
         fitView
       >
         <Background />
-        <DateRuler minDate={layout.minDate} maxDate={layout.maxDate} />
+        <DateRuler minDate={layout.minDate} maxDate={layout.maxDate} pxPerDay={layout.pxPerDay} />
         <GraphControls />
       </ReactFlow>
     </div>

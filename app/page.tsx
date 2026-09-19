@@ -7,6 +7,7 @@ import { TicketPanel } from "@/components/TicketPanel";
 import type { Branch, Dependency, Ticket } from "@/lib/types";
 
 export default function Home() {
+  const [projects, setProjects] = useState<{ ID: string; NAME: string }[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [currentBranchId, setCurrentBranchId] = useState<string | null>(null);
@@ -19,10 +20,19 @@ export default function Home() {
   useEffect(() => {
     fetch("/api/projects")
       .then((r) => r.json())
-      .then((projects: { ID: string }[]) => {
-        if (projects[0]) setProjectId(projects[0].ID);
+      .then((list: { ID: string; NAME: string }[]) => {
+        setProjects(list);
+        if (list[0]) setProjectId(list[0].ID);
       });
   }, []);
+
+  const handleSelectProject = (id: string) => {
+    setProjectId(id);
+    setCurrentBranchId(null);
+    setSelectedId(null);
+    setTickets([]);
+    setDependencies([]);
+  };
 
   const loadBranches = useCallback(async () => {
     if (!projectId) return [];
@@ -108,6 +118,9 @@ export default function Home() {
       </div>
 
       <BranchBar
+        projects={projects}
+        currentProjectId={projectId}
+        onSelectProjectAction={handleSelectProject}
         branches={branches}
         currentBranchId={currentBranchId}
         onSelectBranchAction={setCurrentBranchId}
@@ -122,6 +135,7 @@ export default function Home() {
       )}
 
       <DagView
+        key={projectId}
         tickets={tickets}
         dependencies={dependencies}
         selectedId={selectedId}

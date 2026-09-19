@@ -1,6 +1,9 @@
 import type { Ticket } from "@/lib/types";
 
-export const PX_PER_DAY = 40;
+export const DEFAULT_PX_PER_DAY = 40;
+export const MIN_PX_PER_DAY = 0.3;
+const TARGET_TOTAL_WIDTH = 3000;
+
 export const ROW_HEIGHT = 56;
 export const MIN_BAR_WIDTH = 32;
 
@@ -15,12 +18,19 @@ function diffDays(a: Date, b: Date): number {
   return Math.round((a.getTime() - b.getTime()) / 86_400_000);
 }
 
+function computePxPerDay(totalDays: number): number {
+  if (totalDays <= 0) return DEFAULT_PX_PER_DAY;
+  const scaled = TARGET_TOTAL_WIDTH / totalDays;
+  return Math.min(DEFAULT_PX_PER_DAY, Math.max(MIN_PX_PER_DAY, scaled));
+}
+
 export interface TimelineLayout {
   positions: Map<string, { x: number; y: number }>;
   widths: Map<string, number>;
   minDate: Date;
   maxDate: Date;
   laneCount: number;
+  pxPerDay: number;
 }
 
 export function layoutTimeline(tickets: Ticket[]): TimelineLayout {
@@ -40,6 +50,8 @@ export function layoutTimeline(tickets: Ticket[]): TimelineLayout {
       ? new Date(Math.max(...withDates.map((w) => w.end.getTime())))
       : today;
 
+  const pxPerDay = computePxPerDay(diffDays(maxDate, minDate));
+
   const sorted = [...withDates].sort((a, b) => a.start.getTime() - b.start.getTime());
 
   const laneEnds: Date[] = [];
@@ -55,9 +67,9 @@ export function layoutTimeline(tickets: Ticket[]): TimelineLayout {
       laneEnds[lane] = end;
     }
 
-    positions.set(ticket.ID, { x: diffDays(start, minDate) * PX_PER_DAY, y: lane * ROW_HEIGHT });
-    widths.set(ticket.ID, Math.max(MIN_BAR_WIDTH, diffDays(end, start) * PX_PER_DAY));
+    positions.set(ticket.ID, { x: diffDays(start, minDate) * pxPerDay, y: lane * ROW_HEIGHT });
+    widths.set(ticket.ID, Math.max(MIN_BAR_WIDTH, diffDays(end, start) * pxPerDay));
   }
 
-  return { positions, widths, minDate, maxDate, laneCount: laneEnds.length };
+  return { positions, widths, minDate, maxDate, laneCount: laneEnds.length, pxPerDay };
 }

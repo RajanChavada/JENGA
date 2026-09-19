@@ -87,6 +87,8 @@ Dragging a node is visual-only: it repositions a ticket's lane to untangle overl
 
 Selecting a ticket opens `TicketPanel` docked full-width below the graph (not a popup/modal) — avoids overlay/z-index/click-outside handling and keeps the graph visible while reading ticket details.
 
+**Scale is adaptive, not fixed** (`computePxPerDay` in `dagLayout.ts`): a constant 40px/day works for Route 12's ~2-week span but renders a multi-year project (the seeded Eglinton Crosstown LRT spans 2011–2026) hundreds of thousands of pixels wide — found by actually loading it, not by inspection. The date ruler's tick granularity (week/month/year) scales with the same span for the same reason. React Flow's `fitView` also only auto-fits once on mount, so switching projects needs `<DagView key={projectId}>` in `app/page.tsx` to force a remount (otherwise the view keeps the previous project's stale zoom/pan), and `minZoom` is set well below React Flow's default `0.5` so a long project's full range can actually fit in frame.
+
 ## Edge Cases Handled in MVP
 
 - Cyclic dependency on edge insert → rejected via reachability check before insert.
@@ -98,9 +100,11 @@ Selecting a ticket opens `TicketPanel` docked full-width below the graph (not a 
 
 ## Demo Script / Seed Data
 
-Seed one project matching the original pitch examples directly: a road-construction project with tickets for groundwork/site clearing → height clearance/grading → road segment paving (multiple segments as parallel branches of the DAG) → truck logistics/delivery scheduling as a shared dependency feeding multiple paving tickets. This gives a DAG with genuine fan-in/fan-out (good for showing AND-join and branching) using the exact scenario the pitch already describes.
+`scripts/seed.ts` seeds **two** projects, selectable via the project switcher in `BranchBar.tsx` (`app/page.tsx` passes `key={projectId}` to `DagView` so switching forces a clean remount — see "DAG View: Timeline Layout" below for why that matters):
 
-Demo flow: show the trunk DAG → delay a groundwork ticket → show downstream ripple → fork a branch at that ticket to model "what if we reroute trucks instead" → edit the branch → merge it back and show the diff → submit a progress report as the contractor → show the GPTZero flag → approve as the owner → ticket closes, DAG updates.
+**Route 12 Resurfacing** — the original pitch scenario: groundwork/site clearing → height clearance/grading → road segment paving (parallel segments) → truck logistics as a shared dependency feeding multiple paving tickets. Genuine fan-in/fan-out for AND-join and branching demos. Demo flow: show the trunk DAG → delay a groundwork ticket → show downstream ripple → fork a branch to model "what if we reroute trucks instead" → edit → merge back and show the diff → submit a progress report as the contractor → show the GPTZero flag → approve as the owner.
+
+**Line 5 Eglinton Crosstown LRT** — a real, 14-ticket, 2011–2026 timeline for Toronto's badly-delayed light rail line, grounded in verified research rather than invented dates. Real delay figures (don't repeat an unverified "17 years" claim): **~4.4 years late** vs. the contracted September 2021 target, **~19 years** total from the March 2007 Transit City proposal to the actual February 8, 2026 opening. The real construction-phase → dispute → testing → launch dependency chain is seeded with 13 tickets `done` (each with an approved report — 3 link real, external, verified-working Metrolinx/Auditor-General PDFs; the other 10 link synthetic one-pagers from `scripts/generate-eglinton-pdfs.ts`, committed under `public/reference-docs/eglinton/`) and the final "Revenue Service Launch Prep" ticket left `in_progress` with no report, for a live PDF-upload demo through the real pipeline. Demo flow: switch to this project, show the real multi-year delay pattern and the litigation/settlement tickets' real evidence links, then submit a fresh PDF against the open final ticket to show the live GPTZero pipeline against real-world-shaped content.
 
 ## Build Sequence (time-boxed)
 
