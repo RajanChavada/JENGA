@@ -1,8 +1,15 @@
 """JENGA's verification pipeline.
 
-A four-node LangGraph: gptzero_gate -> vision_analysis -> historical_memory -> arbiter.
+A five-node LangGraph:
+gptzero_gate -> vision_analysis -> historical_memory -> sensor_check -> arbiter.
 
-Two rules govern the arbiter, in this order:
+Three rules govern the arbiter, in this order:
+
+0. The sensor rule. If the site's curing telemetry is below the minimum and the
+   report claims the concrete is poured, set or cured, the verdict is DISPUTED. It
+   sits ahead of the AI gate deliberately: a thermometer outranks an authorship
+   heuristic, so a cold pour reported as cured is disputed on the physical
+   measurement even when the prose is also flagged as generated.
 
 1. GPTZero gate. An AI-authored report (ai_probability over FLAG_THRESHOLD) forces
    UNDER_REVIEW no matter how good the photograph looks. A generated narrative can
@@ -18,6 +25,7 @@ Two rules govern the arbiter, in this order:
 
 from __future__ import annotations
 
+import re
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -25,8 +33,17 @@ from langgraph.graph import END, START, StateGraph
 from integrations import emit, expected_for, span, transaction
 from integrations.gptzero import FLAG_THRESHOLD, score_text
 from integrations.memory import retrieve_similar
+from integrations.tiger import CURING_MIN_TEMP_C, curing_status
 from integrations.vision import CONFIDENCE_THRESHOLD, analyse_image
 from integrations.zip_api import detect_material_shortage  # noqa: F401  (re-exported)
+
+#: A claim about concrete that has been placed or has hardened — the only kind of
+#: claim curing temperature can contradict.
+CURING_CLAIM_RE = re.compile(r"\b(cur(e|ed|ing)|pour(ed)?|set)\b", re.I)
+SENSOR_REQUEST = (
+    "Provide maturity-meter log or core sample before downstream formwork proceeds."
+)
+
 
 class VerifyState(TypedDict, total=False):
     task: dict
@@ -41,7 +58,56 @@ class VerifyState(TypedDict, total=False):
     gptzero: dict
     vision: dict
     historical: dict
+    sensor: dict
     verdict: dict
+
+
+# ---------------------------------------------------------------- helpers
+
+
+def _window_label(seconds: int) -> str:
+    """Seconds under two minutes, whole minutes at or above it.
+
+    Every string quoting a sensor window goes through this, so the agent never
+    claims an averaging window it did not actually measure over. The frontend's
+    offline `synthesizeTrace` fallback mirrors the same rule.
+    """
+    return f"{seconds // 60} min" if seconds >= 120 else f"{seconds} s"
+
+
+def _threshold_label(sensor: dict) -> str:
+    return f"{float(sensor.get('threshold_c', CURING_MIN_TEMP_C)):g}"
+
+
+def _sensor_card(sensor: dict) -> tuple[str, str]:
+    """(detail, signal) for the site-telemetry trace card."""
+    avg = sensor.get("avg_temp_c")
+    if not sensor.get("samples") or avg is None:
+        return "No sensor telemetry for this ticket.", "info"
+    window, threshold = _window_label(int(sensor.get("window_s") or 0)), _threshold_label(sensor)
+    if sensor.get("below_threshold"):
+        return (
+            f"Curing temp avg {float(avg):.1f} °C over last {window}, "
+            f"below {threshold} °C threshold."
+        ), "bad"
+    return (
+        f"Curing temp avg {float(avg):.1f} °C over last {window} (threshold {threshold} °C)."
+    ), "ok"
+
+
+def _sensor_sentence(sensor: dict) -> str:
+    """The clause rule 0 appends to its reasoning, quoting the measured window.
+
+    Phrased with the window trailing rather than attributive ("an average of X
+    over the last 8 s", not "a 8 s average of X") so no rendered duration ever
+    lands on the wrong indefinite article.
+    """
+    return (
+        f"Contractor reports the pour as cured; site sensors show an average of "
+        f"{float(sensor['avg_temp_c']):.1f} °C over the last "
+        f"{_window_label(int(sensor.get('window_s') or 0))} against a "
+        f"{_threshold_label(sensor)} °C minimum. Claim and telemetry conflict."
+    )
 
 
 # ---------------------------------------------------------------- nodes
@@ -108,8 +174,38 @@ async def historical_memory(state: VerifyState) -> dict:
     return {"historical": result}
 
 
+async def sensor_check(state: VerifyState) -> dict:
+    """Read the ticket's curing telemetry off the Tiger Data hypertable.
+
+    Telemetry is never allowed to fail a verdict: a dead sensor stream degrades
+    to "no telemetry" and the pipeline carries on.
+    """
+    task_id = state["task"].get("id", "")
+    with span("sensor_check", task_id=task_id) as s:
+        try:
+            result = await curing_status(task_id)
+        except Exception as exc:
+            emit("warning", "sensor_check unavailable", task_id=task_id, error=type(exc).__name__)
+            result = {"samples": 0}
+        s.set_data("samples", result.get("samples"))
+        s.set_data("avg_temp_c", result.get("avg_temp_c"))
+        s.set_data("below_threshold", bool(result.get("below_threshold")))
+        s.set_data("source", result.get("source"))
+        emit(
+            "info",
+            "sensor_check read curing telemetry",
+            task_id=task_id,
+            samples=result.get("samples"),
+            avg_temp_c=result.get("avg_temp_c"),
+            window_s=result.get("window_s"),
+            below_threshold=bool(result.get("below_threshold")),
+            source=result.get("source"),
+        )
+    return {"sensor": result}
+
+
 async def arbiter(state: VerifyState) -> dict:
-    """Resolve across all three sources and emit the final Verdict."""
+    """Resolve across all four sources and emit the final Verdict."""
     task_id = state["task"].get("id", "")
     strict = bool(state.get("strict", True))
     with span("arbiter", task_id=task_id) as s:
@@ -142,6 +238,7 @@ async def _decide(state: VerifyState) -> dict:
     gz = state.get("gptzero") or {"ai_probability": 0.0, "flagged": False}
     vision = state.get("vision") or {}
     hist = state.get("historical") or {}
+    sensor = state.get("sensor") or {"samples": 0}
     canned = expected_for(task_id)
 
     observation = vision.get("observation", "No visual observation available.")
@@ -157,10 +254,26 @@ async def _decide(state: VerifyState) -> dict:
     coords = f"blueprint coordinates X:{task.get('x')} Y:{task.get('y')}"
     where = f"{task.get('name', task_id)} in {str(task.get('zone', '')).replace('_', ' ')}"
 
+    # Rule 0 — the sensor rule. A physical measurement contradicting the written
+    # claim, and the only rule allowed ahead of the AI gate: whether the prose was
+    # generated is irrelevant once the concrete itself is too cold to have cured.
+    # DISPUTED carries no confidence cap, so this outranks the gate's hold.
+    if sensor.get("below_threshold") and CURING_CLAIM_RE.search(state.get("claim") or ""):
+        status, branch = "DISPUTED", "sensor_conflict"
+        confidence = max(vis_conf, 0.9)
+        reasoning = (
+            f"The submitted claim for {where} describes concrete that has been poured, set or "
+            f"cured, and the site's own curing telemetry contradicts it. {observation} "
+            f"{hist_summary} This is raised as a dispute rather than a review hold because the "
+            f"conflict is between a written assertion and a measurement, not between two readings "
+            f"of the same ambiguous evidence."
+        )
+        request = SENSOR_REQUEST
+
     # Rule 1 — the AI gate. In strict mode a hard override, nothing downstream
     # can lift it. In lenient mode it does not fire at all and evaluation falls
     # through to the rules below.
-    if ai_flagged and strict:
+    elif ai_flagged and strict:
         status, branch = "UNDER_REVIEW", "ai_gate"
         confidence = min(vis_conf, 0.49)
         reasoning = (
@@ -254,6 +367,14 @@ async def _decide(state: VerifyState) -> dict:
     else:
         request = None
 
+    # Rule 0's numbers, applied last for the same reason the advisory above is:
+    # neither the demo's canned wording nor the request-clearing that every
+    # non-hold gets may swallow a physical measurement.
+    if branch == "sensor_conflict":
+        confidence = max(confidence, 0.9)
+        reasoning = f"{reasoning.rstrip()} {_sensor_sentence(sensor)}"
+        request = SENSOR_REQUEST
+
     return {
         "branch": branch,
         "verdict": {
@@ -263,6 +384,7 @@ async def _decide(state: VerifyState) -> dict:
             "reasoning": reasoning,
             "actionable_request": request,
             "gptzero": {"ai_probability": round(ai_prob, 3), "flagged": ai_flagged},
+            "sensor": sensor,
             "vision": {
                 "observation": observation,
                 "matches_claim": matches,
@@ -281,13 +403,15 @@ async def _decide(state: VerifyState) -> dict:
 def _build_trace(state: VerifyState) -> list[dict]:
     """Turn the finished graph state into a human-readable resolution trace.
 
-    This is the Rox beat made visible: four sources go in, and each node's read
-    is surfaced in order so the agent's multi-source reasoning under uncertainty
-    is legible — including where it declines to conclude.
+    This is the Rox beat made visible: four sources go in — authorship, image,
+    history and site telemetry — and each node's read is surfaced in order so the
+    agent's multi-source reasoning under uncertainty is legible, including where
+    it declines to conclude.
     """
     gz = state.get("gptzero") or {}
     vision = state.get("vision") or {}
     hist = state.get("historical") or {}
+    sensor = state.get("sensor") or {"samples": 0}
     verdict = state.get("verdict") or {}
 
     ai_prob = float(gz.get("ai_probability", 0.0))
@@ -301,6 +425,7 @@ def _build_trace(state: VerifyState) -> list[dict]:
     hist_source = hist.get("source", "local corpus")
     hist_count = len(hist.get("packages") or [])
     status = verdict.get("status", "UNDER_REVIEW")
+    sensor_detail, sensor_signal = _sensor_card(sensor)
 
     if matches is True:
         vision_detail = f"Photo is consistent with the claim ({vis_conf:.0%} confidence)."
@@ -344,9 +469,20 @@ def _build_trace(state: VerifyState) -> list[dict]:
             "signal": "info",
         },
         {
+            "node": "sensor_check",
+            "title": "4 · Site telemetry",
+            "detail": sensor_detail,
+            "signal": sensor_signal,
+        },
+        {
             "node": "arbiter",
-            "title": "4 · Arbiter",
-            "detail": {
+            "title": "5 · Arbiter",
+            # A sensor dispute needs its own line: the generic one credits legible
+            # photographic evidence, and rule 0 fires on the thermometer whether a
+            # photograph was submitted or not.
+            "detail": "Telemetry contradicts the written claim — disputed."
+            if status == "DISPUTED" and sensor.get("below_threshold")
+            else {
                 "APPROVED": "Sources agree — approved.",
                 "DISPUTED": "Sources conflict, evidence legible — disputed.",
                 "UNDER_REVIEW": "Evidence insufficient — declined to rule, routed to a human.",
@@ -362,11 +498,13 @@ _graph = StateGraph(VerifyState)
 _graph.add_node("gptzero_gate", gptzero_gate)
 _graph.add_node("vision_analysis", vision_analysis)
 _graph.add_node("historical_memory", historical_memory)
+_graph.add_node("sensor_check", sensor_check)
 _graph.add_node("arbiter", arbiter)
 _graph.add_edge(START, "gptzero_gate")
 _graph.add_edge("gptzero_gate", "vision_analysis")
 _graph.add_edge("vision_analysis", "historical_memory")
-_graph.add_edge("historical_memory", "arbiter")
+_graph.add_edge("historical_memory", "sensor_check")
+_graph.add_edge("sensor_check", "arbiter")
 _graph.add_edge("arbiter", END)
 GRAPH = _graph.compile()
 
@@ -428,6 +566,7 @@ async def verify_submission(
             # only the raw dict (which is what gets persisted) can see it.
             "gptzero": {"ai_probability": 0.0, "flagged": False, "scored": False},
             "vision": {"observation": "Vision analysis unavailable.", "matches_claim": None, "confidence": 0.0},
+            "sensor": {"samples": 0},
             "evidence": {
                 "spec": task.get("spec_text", ""),
                 "claim": claim or "(no written or spoken claim submitted)",
