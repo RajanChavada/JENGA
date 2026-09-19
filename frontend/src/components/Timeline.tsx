@@ -2,10 +2,10 @@
 
 import { useMemo } from 'react';
 import { motion } from 'framer-motion';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, ShieldAlert } from 'lucide-react';
 import { STATE_STYLE } from '@/lib/theme';
 import { useJenga, type StageEvent } from '@/store/useJenga';
-import type { Task } from '@/lib/types';
+import type { ScheduleAnalytics, SpendAnalytics, SpendEvent, Task } from '@/lib/types';
 
 /** Label gutter, px. Everything right of this is the day axis. */
 const LABEL_W = 176;
@@ -27,6 +27,42 @@ export function Timeline() {
   const selectedTaskId = useJenga((s) => s.selectedTaskId);
   const selectTask = useJenga((s) => s.selectTask);
   const cascading = useJenga((s) => s.cascading);
+  const schedule = useJenga((s) => s.schedule);
+  const spend = useJenga((s) => s.spend);
+  const purchaseOrders = useJenga((s) => s.purchaseOrders);
+
+  /**
+   * The one anchor tying wall clock to the project-day axis: analytics declare
+   * which date is project day 0. Everything drawn from a timestamp — stage
+   * ticks, procurement diamonds — maps through this. Null until analytics load.
+   */
+  const day0Ms = useMemo(
+    () => (schedule ? new Date(`${schedule.day0}T00:00:00Z`).getTime() : null),
+    [schedule],
+  );
+  const dayOf = useMemo(
+    () =>
+      day0Ms === null
+        ? null
+        : (ms: number) => (ms - day0Ms) / 86_400_000,
+    [day0Ms],
+  );
+
+  /** Procurement events per task row, via each PO's linked task. */
+  const diamondsByTask = useMemo(() => {
+    if (!spend) return {};
+    const linked: Record<string, string> = {};
+    for (const po of purchaseOrders) {
+      if (po.linked_task) linked[po.id] = po.linked_task;
+    }
+    const out: Record<string, SpendEvent[]> = {};
+    for (const e of spend.events) {
+      const taskId = linked[e.po_id];
+      if (!taskId) continue;
+      (out[taskId] ??= []).push(e);
+    }
+    return out;
+  }, [spend, purchaseOrders]);
 
   /**
    * Derive the axis from the data rather than trusting projectDuration alone:
@@ -161,6 +197,8 @@ export function Timeline() {
                   task={t}
                   base={baseline[t.id]}
                   log={stageHistory[t.id]}
+                  diamonds={diamondsByTask[t.id]}
+                  dayOf={dayOf}
                   selected={t.id === selectedTaskId}
                   onSelect={() => selectTask(t.id === selectedTaskId ? null : t.id)}
                   pct={pct}
@@ -169,6 +207,10 @@ export function Timeline() {
             </div>
           </div>
 
+          {/* Execution vs money, on the same day axis as the bars above: the
+              earned-schedule S-curve and committed spend vs the site budget. */}
+          <AnalysisBand schedule={schedule} spend={spend} pct={pct} span={span} />
+
           <footer className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-slate-200 px-3 py-1.5 text-[9px] text-slate-400">
             <Swatch className="bg-slate-400">current</Swatch>
             <Swatch className="bg-slate-300 [background-image:repeating-linear-gradient(45deg,#94a3b866_0_3px,transparent_3px_6px)]">
@@ -176,7 +218,16 @@ export function Timeline() {
             </Swatch>
             <Swatch className="bg-slate-300">baseline (moved only)</Swatch>
             <Swatch className="bg-red-500">critical · zero float</Swatch>
-            <span>ticks = stage transitions</span>
+            <span>ticks = stage transitions (wall clock)</span>
+            <span className="flex items-center gap-1">
+              <span className="h-1.5 w-1.5 rotate-45 bg-sky-500" /> PO created
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="h-1.5 w-1.5 rotate-45 bg-amber-500" /> expedited
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="h-1.5 w-1.5 rotate-45 bg-emerald-500" /> delivered
+            </span>
           </footer>
         </>
       )}
@@ -197,6 +248,8 @@ function Row({
   task: t,
   base,
   log,
+  diamonds,
+  dayOf,
   selected,
   onSelect,
   pct,
@@ -204,6 +257,8 @@ function Row({
   task: Task;
   base: { es: number; ef: number } | undefined;
   log: StageEvent[] | undefined;
+  diamonds: SpendEvent[] | undefined;
+  dayOf: ((ms: number) => number) | null;
   selected: boolean;
   onSelect: () => void;
   pct: (day: number) => number;
@@ -212,6 +267,18 @@ function Row({
   const moved = !!base && (base.es !== t.es || base.ef !== t.ef);
   // Milestones have zero duration; give them a sliver so they stay clickable.
   const barW = Math.max(pct(t.ef - t.es), 0.5);
+
+  /**
+   * A stage tick's position inside the bar, from its real timestamp. The wall
+   * clock maps onto the day axis through the analytics anchor, then clamps into
+   * the bar: a ticket worked outside its scheduled window still shows its
+   * transitions on the bar that represents it, at the nearest honest end.
+   */
+  const tickPct = (atMs: number, i: number, n: number): number => {
+    if (!dayOf || t.ef <= t.es) return ((i + 1) / (n + 1)) * 100; // pre-analytics fallback
+    const day = Math.min(Math.max(dayOf(atMs), t.es), t.ef);
+    return ((day - t.es) / (t.ef - t.es)) * 100;
+  };
 
   return (
     <button
@@ -284,25 +351,170 @@ function Row({
             boxShadow: t.is_critical ? '0 0 0 1px #dc2626' : undefined,
           }}
         >
-          {/* ponytail: ticks are spaced evenly by index, not by timestamp — the bar
-              axis is project days and a transition log is wall clock, so the two do
-              not share a scale. They read as "this ticket passed through these
-              stages, in this order". Place by real date once tasks carry one. */}
+          {/* Stage transitions at their real timestamps, mapped onto the day
+              axis through the analytics anchor (clamped into the bar). Before
+              analytics load they fall back to even spacing by order. */}
           {log &&
             log.length > 1 &&
             log.map((e, i) => (
               <span
                 key={`${e.at}-${i}`}
+                title={`${STATE_STYLE[e.state].label} · ${new Date(e.at).toLocaleString()}`}
                 className="absolute inset-y-0 w-[2px]"
                 style={{
-                  left: `${((i + 1) / (log.length + 1)) * 100}%`,
+                  left: `${tickPct(e.at, i, log.length)}%`,
                   background: STATE_STYLE[e.state].hex,
                   boxShadow: '0 0 0 1px rgba(255,255,255,0.7)',
                 }}
               />
             ))}
         </motion.div>
+
+        {/* Procurement lifecycle diamonds: this row's linked PO, at the day its
+            Zip event landed. Money on the same axis as the work it feeds. */}
+        {diamonds?.map((d, i) => (
+          <span
+            key={`${d.po_id}-${d.event}-${i}`}
+            title={`${d.po_id} · ${d.event.replace('po_', '')}${d.amount ? ` · $${d.amount.toLocaleString()}` : ''} · ${new Date(d.date).toLocaleDateString()}`}
+            className={`absolute z-10 h-[7px] w-[7px] rotate-45 border border-white ${
+              d.event === 'po_expedited'
+                ? 'bg-amber-500'
+                : d.event === 'po_delivered'
+                  ? 'bg-emerald-500'
+                  : 'bg-sky-500'
+            }`}
+            style={{ left: `calc(${pct(Math.max(Math.min(d.day, t.lf), 0))}% - 3px)`, top: -1 }}
+          />
+        ))}
       </div>
     </button>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Analysis band — the combined story                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Two cumulative curves off the Tiger Data event stream, on the same day axis
+ * as the Gantt above: verified work vs plan (the earned-schedule S-curve) and
+ * committed spend vs the site budget. Both are drawn as % of their own total,
+ * so one y-axis serves days and dollars; the dashed line at the top is 100% —
+ * the budget and the full plan. The gap between the amber and blue curves is
+ * the demo's finding: spending outrunning the build.
+ */
+function AnalysisBand({
+  schedule,
+  spend,
+  pct,
+  span,
+}: {
+  schedule: ScheduleAnalytics | null;
+  spend: SpendAnalytics | null;
+  pct: (day: number) => number;
+  span: number;
+}) {
+  if (!schedule) return null;
+
+  const H = 64;
+  const X = 1000;
+  const x = (day: number) => (pct(day) / 100) * X;
+  const y = (fraction: number) => H - 4 - Math.max(0, Math.min(1, fraction)) * (H - 10);
+
+  const planned = schedule.points
+    .filter((p) => p.day <= span)
+    .map((p) => `${x(p.day)},${y(p.planned / (schedule.planned_total || 1))}`)
+    .join(' ');
+  const earned = schedule.points
+    .filter((p) => p.day <= span && p.earned !== null)
+    .map((p) => `${x(p.day)},${y((p.earned as number) / (schedule.planned_total || 1))}`)
+    .join(' ');
+  const committed = (spend?.points ?? [])
+    .filter((p) => p.day <= span)
+    .map((p) => `${x(p.day)},${y(p.committed / (spend!.budget || 1))}`)
+    .join(' ');
+
+  const slip = schedule.projected_slip_days;
+
+  return (
+    <div className="shrink-0 border-t border-slate-200">
+      <div className="flex items-center gap-2 px-3 pt-1.5">
+        <h4 className="text-[9px] uppercase tracking-wider text-slate-400">
+          Verified work vs committed spend · Tiger Data
+        </h4>
+        {schedule.spi !== null && (
+          <span
+            className={`rounded border px-1 py-px font-mono text-[9px] ${
+              schedule.spi < 0.9
+                ? 'border-amber-300 bg-amber-50 text-amber-700'
+                : 'border-slate-200 bg-slate-50 text-slate-600'
+            }`}
+          >
+            SPI {schedule.spi.toFixed(2)}
+          </span>
+        )}
+        {slip !== null && slip > 0 && (
+          <span className="rounded border border-amber-300 bg-amber-50 px-1 py-px font-mono text-[9px] text-amber-700">
+            projected +{slip}d
+          </span>
+        )}
+        {spend && (
+          <span className="rounded border border-slate-200 bg-slate-50 px-1 py-px font-mono text-[9px] text-slate-600">
+            {spend.committed_pct}% committed · {spend.earned_pct}% verified
+          </span>
+        )}
+        {spend?.escalation && (
+          <span
+            className="flex min-w-0 items-center gap-1 truncate rounded border border-red-300 bg-red-50 px-1 py-px text-[9px] text-red-700"
+            title={spend.escalation.message}
+          >
+            <ShieldAlert size={9} className="shrink-0" />
+            <span className="truncate">{spend.escalation.message}</span>
+          </span>
+        )}
+      </div>
+
+      <div className="flex items-stretch">
+        <div
+          className="flex shrink-0 flex-col justify-between px-2 py-1 text-right font-mono text-[8px] text-slate-300"
+          style={{ width: LABEL_W }}
+        >
+          <span>100% · budget / plan</span>
+          <span className="text-slate-400">
+            <span className="text-sky-600">— earned</span>{' '}
+            <span className="text-amber-600">— committed</span>{' '}
+            <span className="text-slate-400">— planned</span>
+          </span>
+        </div>
+        <svg
+          viewBox={`0 0 ${X} ${H}`}
+          preserveAspectRatio="none"
+          className="h-16 min-w-0 flex-1"
+          role="img"
+          aria-label="Cumulative verified work and committed spend against plan and budget"
+        >
+          {/* 100% — the budget and the full plan. */}
+          <line x1={0} x2={X} y1={y(1)} y2={y(1)} strokeDasharray="4 4" className="stroke-red-300" strokeWidth={1} />
+          {/* Today. */}
+          <line
+            x1={x(schedule.today_day)}
+            x2={x(schedule.today_day)}
+            y1={0}
+            y2={H}
+            className="stroke-slate-200"
+            strokeWidth={1}
+          />
+          {planned && (
+            <polyline fill="none" points={planned} className="stroke-slate-300" strokeWidth={1.5} />
+          )}
+          {committed && (
+            <polyline fill="none" points={committed} className="stroke-amber-500" strokeWidth={1.5} />
+          )}
+          {earned && (
+            <polyline fill="none" points={earned} className="stroke-sky-600" strokeWidth={2} />
+          )}
+        </svg>
+      </div>
+    </div>
   );
 }

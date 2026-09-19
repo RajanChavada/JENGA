@@ -66,45 +66,91 @@ class Evidence(BaseModel):
     historical: str
 
 
-class SensorStatus(BaseModel):
-    """Curing telemetry for one ticket, as the agent's fifth evidence source."""
+class PaceStatus(BaseModel):
+    """Earned-schedule pace, as the agent's fourth evidence source (rule 0')."""
 
-    avg_temp_c: float | None = None
-    min_temp_c: float | None = None
+    spi: float | None = None
+    zone: str = ""
+    #: The drought window the zone is judged over, in days.
+    window_days: int = 7
+    #: Verified work-days produced in the claim's zone inside that window.
+    zone_earned_days: float = 0.0
+    #: Events needed before pace decides anything. `samples` under this means
+    #: "too little history to judge", which is neither a fast site nor a slow one.
     samples: int = 0
-    below_threshold: bool = False
-    threshold_c: float = 10.0
-    #: Readings needed before the average decides anything. `samples` under this
-    #: means "too sparse to judge", which is neither a warm slab nor a cold one.
-    min_samples: int = 10
-    #: The window actually measured over, which is what the UI quotes. Shorter
-    #: than `window_requested_s` while a new curing regime is still filling up.
-    window_s: int = 120
-    window_requested_s: int = 120
+    min_samples: int = 5
+    spi_floor: float = 0.6
+    earned_total: float = 0.0
+    planned_total: float = 0.0
+    flagged: bool = False
     source: Literal["tiger", "mock"] = "mock"
 
 
-class SensorBucket(BaseModel):
-    """One `time_bucket` row: live off the hypertable, or off the 5-min aggregate."""
-
-    bucket: str
-    avg_temp: float | None = None
-    avg_humidity: float | None = None
-    min_temp: float | None = None
-    max_temp: float | None = None
-    min_humidity: float | None = None
-    max_humidity: float | None = None
+class SchedulePoint(BaseModel):
+    day: int
+    date: str
+    planned: float
+    #: Null beyond today — the earned curve does not claim the future.
+    earned: float | None = None
 
 
-class SensorPayload(BaseModel):
-    live: list[SensorBucket]
-    history: list[SensorBucket]
-    status: SensorStatus
+class ScheduleAnalytics(BaseModel):
+    """The earned-schedule S-curve: planned vs verified work off the event stream."""
+
+    day0: str
+    today_day: int
+    project_duration: int
+    planned_total: float
+    earned_total: float
+    spi: float | None = None
+    projected_finish_day: float | None = None
+    projected_slip_days: float | None = None
+    points: list[SchedulePoint]
+    seeded: bool = False
+    source: Literal["tiger", "mock"] = "mock"
 
 
-class SensorScenario(BaseModel):
-    ticket_id: str
-    mode: Literal["normal", "cold"]
+class SpendPoint(BaseModel):
+    day: int
+    date: str
+    committed: float
+
+
+class SpendEvent(BaseModel):
+    date: str
+    day: int
+    po_id: str
+    event: str
+    amount: float
+
+
+class Escalation(BaseModel):
+    """The governance agent's finding: compliant POs adding up to a pattern."""
+
+    at: str
+    message: str
+    committed_pct: float
+    earned_pct: float
+    workflow_name: str | None = None
+    #: `zip_comment` when the escalation landed as a real artifact on staging.
+    delivered: Literal["zip_comment", "local"] = "local"
+
+
+class SpendAnalytics(BaseModel):
+    """Committed spend vs the site budget, with the escalation state."""
+
+    budget: float
+    currency: str = "CAD"
+    committed_total: float
+    committed_pct: float
+    earned_pct: float
+    points: list[SpendPoint]
+    events: list[SpendEvent]
+    escalation: Escalation | None = None
+    workflows_read: int = 0
+    workflow_name: str | None = None
+    seeded: bool = False
+    source: Literal["tiger", "mock"] = "mock"
 
 
 class VerdictStep(BaseModel):
@@ -126,9 +172,9 @@ class Verdict(BaseModel):
     gptzero: GPTZero
     vision: Vision
     evidence: Evidence
-    #: Curing telemetry the arbiter's rule 0 read. Absent only on the
-    #: pipeline-error path of an older verdict.
-    sensor: SensorStatus | None = None
+    #: Earned-schedule pace the arbiter's rule 0' read. Absent on verdicts
+    #: persisted before the pace rule existed.
+    pace: PaceStatus | None = None
     #: Step-by-step trace of the five-node LangGraph that produced this verdict.
     trace: list[VerdictStep] = []
 
@@ -225,11 +271,6 @@ class StateRequest(BaseModel):
     state: TaskState
 
 
-class ScenarioRequest(BaseModel):
-    #: Anything else is a 422; the simulator has exactly these two regimes.
-    mode: Literal["normal", "cold"]
-
-
 class POActionRequest(BaseModel):
     """A procurement action a planner takes on a purchase order from the ledger."""
 
@@ -263,8 +304,12 @@ class AgentProcurementResponse(BaseModel):
     po_number: str | None = None
     vendor: str | None = None
     detail: str
+    #: Estimated committed dollars — what lands in the spend event stream.
+    amount: float = 0.0
     steps: list[VerdictStep] = []
     purchase_order: PurchaseOrder | None = None
+    #: Set when this creation tipped cumulative spend over the governance line.
+    escalation: Escalation | None = None
 
 
 class DisputeResponse(BaseModel):

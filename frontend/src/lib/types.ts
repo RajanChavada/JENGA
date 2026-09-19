@@ -56,51 +56,88 @@ export interface GraphResponse {
 
 export type VerdictStatus = 'APPROVED' | 'DISPUTED' | 'UNDER_REVIEW';
 
-/** Which curing regime the simulator is driving a ticket through. */
-export type SensorMode = 'normal' | 'cold';
-
-/** Curing telemetry for one ticket — the agent's fifth evidence source. */
-export interface SensorStatus {
-  avg_temp_c: number | null;
-  min_temp_c: number | null;
-  samples: number;
+/** Earned-schedule pace — the agent's fourth evidence source (rule 0'). */
+export interface PaceStatus {
+  spi: number | null;
+  zone: string;
+  /** The drought window the zone is judged over, in days. */
+  window_days: number;
+  /** Verified work-days produced in the claim's zone inside that window. */
+  zone_earned_days: number;
   /**
-   * The arbiter's rule 0 reads this and nothing else. It stays false while
-   * `samples < min_samples`, so it folds "too sparse to judge" and "warm
-   * enough" into the same value — never render it as "the pour is fine".
+   * Events needed before pace decides anything. `samples` under this means
+   * "too little history to judge" — neither a fast site nor a slow one.
    */
-  below_threshold: boolean;
-  threshold_c: number;
-  /** Readings needed before the average is allowed to decide anything. */
+  samples: number;
   min_samples: number;
-  /** The window actually measured. Shorter than requested while a new curing
-   * regime is still filling up, and the only one any string may quote. */
-  window_s: number;
-  window_requested_s: number;
+  spi_floor: number;
+  earned_total: number;
+  planned_total: number;
+  flagged: boolean;
   source: 'tiger' | 'mock';
 }
 
-/** One `time_bucket` row: live off the hypertable, or off the 5-min aggregate. */
-export interface SensorBucket {
-  bucket: string;
-  avg_temp: number | null;
-  avg_humidity: number | null;
-  min_temp: number | null;
-  max_temp: number | null;
-  min_humidity: number | null;
-  max_humidity: number | null;
+/** One day on the S-curve. `earned` is null beyond today — no claimed future. */
+export interface SchedulePoint {
+  day: number;
+  date: string;
+  planned: number;
+  earned: number | null;
 }
 
-export interface SensorPayload {
-  live: SensorBucket[];
-  /** The continuous aggregate. Always empty in mock mode — there is none to read. */
-  history: SensorBucket[];
-  status: SensorStatus;
+export interface ScheduleAnalytics {
+  day0: string;
+  today_day: number;
+  project_duration: number;
+  planned_total: number;
+  earned_total: number;
+  spi: number | null;
+  projected_finish_day: number | null;
+  projected_slip_days: number | null;
+  points: SchedulePoint[];
+  seeded: boolean;
+  source: 'tiger' | 'mock';
 }
 
-export interface SensorScenario {
-  ticket_id: string;
-  mode: SensorMode;
+export interface SpendPoint {
+  day: number;
+  date: string;
+  committed: number;
+}
+
+/** One procurement lifecycle marker — a diamond on the timeline. */
+export interface SpendEvent {
+  date: string;
+  day: number;
+  po_id: string;
+  event: string;
+  amount: number;
+}
+
+/** The governance agent's finding: compliant POs adding up to a pattern. */
+export interface Escalation {
+  at: string;
+  message: string;
+  committed_pct: number;
+  earned_pct: number;
+  workflow_name: string | null;
+  /** `zip_comment` when the escalation landed as a real artifact on staging. */
+  delivered: 'zip_comment' | 'local';
+}
+
+export interface SpendAnalytics {
+  budget: number;
+  currency: string;
+  committed_total: number;
+  committed_pct: number;
+  earned_pct: number;
+  points: SpendPoint[];
+  events: SpendEvent[];
+  escalation: Escalation | null;
+  workflows_read: number;
+  workflow_name: string | null;
+  seeded: boolean;
+  source: 'tiger' | 'mock';
 }
 
 /** One node in the agent's resolution trace (the five-node LangGraph). */
@@ -136,10 +173,10 @@ export interface Verdict {
     historical: string;
   };
   /**
-   * Curing telemetry the arbiter's rule 0 read. Absent on a fixture verdict and
-   * on the backend's pipeline-error path.
+   * Earned-schedule pace the arbiter's rule 0' read. Absent on a fixture
+   * verdict and on the backend's pipeline-error path.
    */
-  sensor?: SensorStatus | null;
+  pace?: PaceStatus | null;
   /** Step-by-step agent trace. Synthesized on the client when absent. */
   trace?: VerdictStep[];
 }

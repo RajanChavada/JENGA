@@ -8,7 +8,8 @@ import type {
   GraphEdge,
   HotzoneResponse,
   PurchaseOrder,
-  SensorPayload,
+  ScheduleAnalytics,
+  SpendAnalytics,
   Task,
   TaskState,
   Verdict,
@@ -134,8 +135,9 @@ interface JengaState {
   /** Whether the activity rail is open. */
   activityOpen: boolean;
   sideEffect: string | null;
-  /** Curing telemetry, keyed by ticket. Written by the poll in <SensorStrip>. */
-  sensors: Record<string, SensorPayload>;
+  /** The earned-schedule S-curve and spend velocity, refreshed after actions. */
+  schedule: ScheduleAnalytics | null;
+  spend: SpendAnalytics | null;
 
   loading: boolean;
   busy: boolean;
@@ -155,7 +157,8 @@ interface JengaState {
   selectTask: (id: string | null) => void;
   selectZone: (z: Zone | null) => void;
   clearVerdict: () => void;
-  loadSensors: (id: string) => Promise<void>;
+  /** Refresh both analytics payloads; logs a new escalation into the rail. */
+  loadAnalytics: () => Promise<void>;
   submit: (submissionId: string) => Promise<void>;
   submitText: (taskId: string, text: string, filename: string) => Promise<void>;
   runDispute: (taskId: string, delayDays: number, reason: string) => Promise<void>;
@@ -208,7 +211,8 @@ const EMPTY_SITE = {
   sideEffect: null,
   attributions: [],
   purchaseOrders: [],
-  sensors: {},
+  schedule: null,
+  spend: null,
   busy: false,
   cascading: false,
 } satisfies Partial<JengaState>;
@@ -259,6 +263,7 @@ export const useJenga = create<JengaState>((set, get) => ({
       loading: false,
       offline: api.isOffline(),
     });
+    void get().loadAnalytics();
   },
 
   /**
@@ -353,7 +358,8 @@ export const useJenga = create<JengaState>((set, get) => ({
       attributions: [],
       sideEffect: null,
       selectedTaskId: null,
-      sensors: {},
+      schedule: null,
+      spend: null,
     });
     // Nothing to re-seed on a site with no project: reloading here would pull
     // the default project's graph onto a pin that has no site behind it.
@@ -387,17 +393,32 @@ export const useJenga = create<JengaState>((set, get) => ({
   clearVerdict: () => set({ verdict: null, sideEffect: null }),
 
   /**
-   * One poll's worth of telemetry. Merged per ticket rather than replacing the
-   * map, so switching selection back and forth keeps the previous sparkline on
-   * screen instead of blanking it for one tick.
+   * Refresh the S-curve and spend analytics. A null response (backend down)
+   * keeps the previous data on screen rather than blanking the band. A *new*
+   * escalation — one the rail has not seen — logs as an activity event, so the
+   * governance moment is announced, not just drawn.
    */
-  async loadSensors(id) {
-    const payload = await api.fetchSensors(id);
-    // A poll in flight when the site changed belongs to the old project. The
-    // strip is already unmounted by then, but writing the reading back would
-    // put the ticket straight into the map the switch just cleared.
-    if (!get().tasks.some((t) => t.id === id)) return;
-    set((s) => ({ sensors: { ...s.sensors, [id]: payload } }));
+  async loadAnalytics() {
+    const site = get().activeProjectId;
+    const [schedule, spend] = await Promise.all([
+      api.fetchScheduleAnalytics(),
+      api.fetchSpendAnalytics(),
+    ]);
+    if (get().activeProjectId !== site) return; // stale by site switch
+    const prev = get().spend?.escalation?.at;
+    set((s) => ({
+      schedule: schedule ?? s.schedule,
+      spend: spend ?? s.spend,
+    }));
+    const esc = spend?.escalation;
+    if (esc && esc.at !== prev) {
+      get().logActivity({
+        source: 'zip',
+        status: 'error',
+        title: 'Governance escalation — spend outrunning the build',
+        detail: esc.message,
+      });
+    }
   },
 
   async submit(submissionId) {
@@ -434,6 +455,9 @@ export const useJenga = create<JengaState>((set, get) => ({
         stageHistory: recordStages(s.stageHistory, tasks),
       };
     });
+
+    // The verdict just landed in the event stream; redraw the curves.
+    void get().loadAnalytics();
 
     // A shortage in the report reschedules its linked PO. Mirrors the backend's
     // Zip mock so the panel is right whether we are live or on fixtures.
@@ -496,6 +520,7 @@ export const useJenga = create<JengaState>((set, get) => ({
         stageHistory: recordStages(s.stageHistory, tasks),
       };
     });
+    void get().loadAnalytics();
   },
 
   async runDispute(taskId, delayDays, reason) {
@@ -565,6 +590,8 @@ export const useJenga = create<JengaState>((set, get) => ({
             cascading: false,
             offline: api.isOffline(),
           });
+          // The slip changed the planned curve; redraw against it.
+          void get().loadAnalytics();
         }
       }, i * CASCADE_STEP_MS);
     });
@@ -599,6 +626,7 @@ export const useJenga = create<JengaState>((set, get) => ({
     set((s) => ({
       purchaseOrders: s.purchaseOrders.map((po) => (po.id === poId ? updated : po)),
     }));
+    void get().loadAnalytics();
   },
 
   async markPoReceived(poId) {
@@ -651,6 +679,9 @@ export const useJenga = create<JengaState>((set, get) => ({
       const po = result.purchase_order;
       set((s) => ({ purchaseOrders: [po, ...s.purchaseOrders] }));
     }
+    // The commitment just landed in the spend stream — redraw, and let
+    // loadAnalytics announce the escalation if this PO tipped it over.
+    void get().loadAnalytics();
     return result;
   },
 

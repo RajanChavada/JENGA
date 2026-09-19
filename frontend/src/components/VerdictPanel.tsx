@@ -2,7 +2,7 @@
 
 import { AnimatePresence, motion } from 'framer-motion';
 import { AlertTriangle, Check, Cpu, HelpCircle, Loader2, X } from 'lucide-react';
-import { thresholdLabel } from '@/lib/fixtures';
+import { paceCard } from '@/lib/fixtures';
 import { useJenga } from '@/store/useJenga';
 import type { Verdict, VerdictStep } from '@/lib/types';
 
@@ -14,7 +14,7 @@ const PIPELINE = [
   { node: 'gptzero_gate', title: 'Authorship gate', work: 'scoring AI-authorship' },
   { node: 'vision_analysis', title: 'Visual analysis', work: 'reading the site photo' },
   { node: 'historical_memory', title: 'Historical memory', work: 'retrieving similar work' },
-  { node: 'sensor_check', title: 'Site telemetry', work: 'checking curing sensors' },
+  { node: 'pace_check', title: 'Site pace', work: 'reading the earned-schedule stream' },
   { node: 'arbiter', title: 'Arbiter', work: 'resolving the sources' },
 ];
 
@@ -228,40 +228,38 @@ function sourceReads(v: Verdict): SourceRead[] {
       signal: 'info',
       detail: v.evidence.historical || 'No close historical match found.',
     },
-    telemetryRead(v),
+    paceRead(v),
   ];
 }
 
-/** Telemetry as a source read, mirroring the sensor payload's own verdict. */
-function telemetryRead(v: Verdict): SourceRead {
-  const s = v.sensor;
-  if (!s || !s.samples || s.avg_temp_c === null) {
+/** Site pace as a source read, mirroring the pace payload's own verdict. */
+function paceRead(v: Verdict): SourceRead {
+  const p = v.pace;
+  if (!p || !p.samples || p.spi === null) {
     return {
-      title: 'Site telemetry',
-      finding: 'No readings',
+      title: 'Site pace',
+      finding: 'No history',
       signal: 'info',
-      detail: 'No curing telemetry on record for this ticket.',
+      detail: 'No site-pace history on record for this project yet.',
     };
   }
-  const where = s.source === 'tiger' ? 'Tiger Data' : 'Simulated store';
-  const floor = s.min_samples || 10;
-  const low = s.min_temp_c === null ? '' : `, low ${s.min_temp_c.toFixed(1)} °C`;
-  const detail = `Curing thermocouples: avg ${s.avg_temp_c.toFixed(1)} °C${low} across ${s.samples} reading${s.samples === 1 ? '' : 's'} · ${where}.`;
-  if (s.samples < floor) {
+  const where = p.source === 'tiger' ? 'Tiger Data' : 'Simulated store';
+  const { detail, signal } = paceCard(p);
+  if (p.samples < (p.min_samples || 5)) {
     return {
-      title: 'Site telemetry',
-      finding: `${s.samples}/${floor} readings — too sparse`,
+      title: 'Site pace',
+      finding: `${p.samples}/${p.min_samples} events — too thin`,
       signal: 'info',
-      detail,
+      detail: `${detail} · ${where}.`,
     };
   }
   return {
-    title: 'Site telemetry',
-    finding: s.below_threshold
-      ? `Below ${thresholdLabel(s.threshold_c)} °C minimum`
-      : `At/above ${thresholdLabel(s.threshold_c)} °C minimum`,
-    signal: s.below_threshold ? 'bad' : 'ok',
-    detail,
+    title: 'Site pace',
+    finding: p.flagged
+      ? `Claim outruns SPI ${p.spi.toFixed(2)}`
+      : `SPI ${p.spi.toFixed(2)} — consistent`,
+    signal,
+    detail: `${detail} · ${where}.`,
   };
 }
 

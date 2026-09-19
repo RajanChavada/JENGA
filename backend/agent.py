@@ -1,17 +1,9 @@
 """JENGA's verification pipeline.
 
 A five-node LangGraph:
-gptzero_gate -> vision_analysis -> historical_memory -> sensor_check -> arbiter.
+gptzero_gate -> vision_analysis -> historical_memory -> pace_check -> arbiter.
 
-Three rules govern the arbiter, in this order:
-
-0. The sensor rule. If the site's curing telemetry is below the minimum and the
-   report claims the concrete is poured, set or cured, the verdict is DISPUTED. It
-   sits ahead of the AI gate deliberately: a thermometer outranks an authorship
-   heuristic, so a cold pour reported as cured is disputed on the physical
-   measurement even when the prose is also flagged as generated. It needs
-   `tiger.SENSOR_MIN_SAMPLES` readings before it will fire at all — too sparse to
-   judge is its own answer, distinct from both a warm slab and a cold one.
+Rules governing the arbiter, in evaluation order:
 
 1. GPTZero gate. An AI-authored report (ai_probability over FLAG_THRESHOLD) forces
    UNDER_REVIEW no matter how good the photograph looks. A generated narrative can
@@ -23,6 +15,16 @@ Three rules govern the arbiter, in this order:
    request naming the blueprint coordinates. The agent never infers compliance from
    evidence it could not see. Refusing to decide, and saying why, is the correct
    answer here.
+
+0'. The pace rule (evaluated before any approval). A completion claim can pass the
+   authorship gate and the photograph and still outrun the site's own measured
+   pace: the earned-schedule stream (Tiger Data) knows how much verified work
+   this site actually produces per day and how long the claim's zone has gone
+   without producing any. When the site is clearly behind plan (SPI under
+   `analytics.PACE_SPI_FLOOR`), the zone is in drought, and there is enough
+   history to judge, the arbiter holds rather than approves. Too little history
+   is its own answer — the rule needs `analytics.PACE_MIN_EVENTS` events before
+   it will fire at all, the same discipline the old ten-readings floor kept.
 """
 
 from __future__ import annotations
@@ -32,18 +34,20 @@ from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+import analytics
 from integrations import emit, expected_for, span, transaction
 from integrations.gptzero import FLAG_THRESHOLD, score_text
 from integrations.memory import retrieve_similar
-from integrations.tiger import CURING_MIN_TEMP_C, SENSOR_MIN_SAMPLES, curing_status
 from integrations.vision import CONFIDENCE_THRESHOLD, analyse_image
 from integrations.zip_api import detect_material_shortage  # noqa: F401  (re-exported)
 
-#: A claim about concrete that has been placed or has hardened — the only kind of
-#: claim curing temperature can contradict.
-CURING_CLAIM_RE = re.compile(r"\b(cur(e|ed|ing)|pour(ed)?|set)\b", re.I)
-SENSOR_REQUEST = (
-    "Provide maturity-meter log or core sample before downstream formwork proceeds."
+#: A claim that work is done — the only kind of claim site pace can contradict.
+COMPLETION_CLAIM_RE = re.compile(
+    r"\b(complete(d)?|finish(ed)?|done|placed|installed|poured|cured|laid|closed out)\b", re.I
+)
+PACE_REQUEST = (
+    "Provide a dated field record (crew logs or survey shots) demonstrating the "
+    "claimed progress before downstream work proceeds."
 )
 
 
@@ -60,72 +64,52 @@ class VerifyState(TypedDict, total=False):
     gptzero: dict
     vision: dict
     historical: dict
-    sensor: dict
+    pace: dict
     verdict: dict
 
 
 # ---------------------------------------------------------------- helpers
 
 
-def _window_label(seconds: int) -> str:
-    """Seconds under two minutes, whole minutes at or above it.
+def _pace_card(pace: dict) -> tuple[str, str]:
+    """(detail, signal) for the site-pace trace card.
 
-    Every string quoting a sensor window goes through this, so the agent never
-    claims an averaging window it did not actually measure over. The frontend's
-    offline `synthesizeTrace` fallback mirrors the same rule.
+    Re-derives `samples < min_samples` rather than trusting `flagged` alone:
+    "too little history to judge" and "the site is pacing fine" are different
+    facts, and one card cannot claim both.
     """
-    return f"{seconds // 60} min" if seconds >= 120 else f"{seconds} s"
-
-
-def _threshold_label(sensor: dict) -> str:
-    return f"{float(sensor.get('threshold_c', CURING_MIN_TEMP_C)):g}"
-
-
-def _sensor_card(sensor: dict) -> tuple[str, str]:
-    """(detail, signal) for the site-telemetry trace card.
-
-    Re-derives `samples < min_samples` rather than reading it off the status,
-    because `below_threshold` alone cannot separate "too sparse to judge" from
-    "warm enough" — the producer folds both into `False`. That makes this a
-    second reader of `curing_status`'s invariant: a hand-built payload, or one
-    persisted before the floor existed, can render "too sparse" here while
-    carrying a `below_threshold` that disputed the verdict.
-    """
-    avg = sensor.get("avg_temp_c")
-    samples = int(sensor.get("samples") or 0)
-    if not samples or avg is None:
-        return "No sensor telemetry for this ticket.", "info"
-    window, threshold = _window_label(int(sensor.get("window_s") or 0)), _threshold_label(sensor)
-    floor = int(sensor.get("min_samples") or SENSOR_MIN_SAMPLES)
-    # `info`, deliberately not `ok`: too few readings to judge and a slab that is
-    # curing properly are different facts, and one card cannot claim both.
+    samples = int(pace.get("samples") or 0)
+    spi = pace.get("spi")
+    if not samples or spi is None:
+        return "No site-pace history for this project yet.", "info"
+    floor = int(pace.get("min_samples") or analytics.PACE_MIN_EVENTS)
+    zone = str(pace.get("zone") or "").replace("_", " ")
+    window = int(pace.get("window_days") or analytics.PACE_WINDOW_DAYS)
     if samples < floor:
         return (
-            f"Telemetry too sparse to judge: {samples} reading{'' if samples == 1 else 's'} "
-            f"in the last {window}, {floor} needed."
+            f"Pace history too thin to judge: {samples} event{'' if samples == 1 else 's'} "
+            f"recorded, {floor} needed."
         ), "info"
-    if sensor.get("below_threshold"):
+    if pace.get("flagged"):
         return (
-            f"Curing temp avg {float(avg):.1f} °C over last {window}, "
-            f"below {threshold} °C threshold."
+            f"Site pacing at SPI {float(spi):.2f} (floor {analytics.PACE_SPI_FLOOR:g}) and "
+            f"no verified work in {zone} for {window} days — the claim outruns the "
+            f"site's measured pace."
         ), "bad"
     return (
-        f"Curing temp avg {float(avg):.1f} °C over last {window} (threshold {threshold} °C)."
+        f"SPI {float(spi):.2f} · {float(pace.get('zone_earned_days') or 0):g}d verified in "
+        f"{zone} over the last {window} days — pace consistent with the claim."
     ), "ok"
 
 
-def _sensor_sentence(sensor: dict) -> str:
-    """The clause rule 0 appends to its reasoning, quoting the measured window.
-
-    Phrased with the window trailing rather than attributive ("an average of X
-    over the last 8 s", not "a 8 s average of X") so no rendered duration ever
-    lands on the wrong indefinite article.
-    """
+def _pace_sentence(pace: dict) -> str:
+    """The clause rule 0' appends to its reasoning, quoting the measured pace."""
+    zone = str(pace.get("zone") or "").replace("_", " ")
     return (
-        f"Contractor reports the pour as cured; site sensors show an average of "
-        f"{float(sensor.get('avg_temp_c') or 0.0):.1f} °C over the last "
-        f"{_window_label(int(sensor.get('window_s') or 0))} against a "
-        f"{_threshold_label(sensor)} °C minimum. Claim and telemetry conflict."
+        f"The earned-schedule stream shows the site pacing at SPI "
+        f"{float(pace.get('spi') or 0.0):.2f} with no verified work in {zone} for the last "
+        f"{int(pace.get('window_days') or 0)} days; a completion claim here outruns the "
+        f"site's own measured pace. Claim and telemetry conflict."
     )
 
 
@@ -193,34 +177,34 @@ async def historical_memory(state: VerifyState) -> dict:
     return {"historical": result}
 
 
-async def sensor_check(state: VerifyState) -> dict:
-    """Read the ticket's curing telemetry off the Tiger Data hypertable.
+async def pace_check(state: VerifyState) -> dict:
+    """Read the site's earned-schedule pace off the Tiger Data event stream.
 
-    Telemetry is never allowed to fail a verdict: a dead sensor stream degrades
-    to "no telemetry" and the pipeline carries on.
+    Pace is never allowed to fail a verdict: a dead analytics path degrades to
+    "no history" and the pipeline carries on.
     """
     task_id = state["task"].get("id", "")
-    with span("sensor_check", task_id=task_id) as s:
+    with span("pace_check", task_id=task_id) as s:
         try:
-            result = await curing_status(task_id)
+            result = await analytics.pace_status(state["task"])
         except Exception as exc:
-            emit("warning", "sensor_check unavailable", task_id=task_id, error=type(exc).__name__)
+            emit("warning", "pace_check unavailable", task_id=task_id, error=type(exc).__name__)
             result = {"samples": 0}
         s.set_data("samples", result.get("samples"))
-        s.set_data("avg_temp_c", result.get("avg_temp_c"))
-        s.set_data("below_threshold", bool(result.get("below_threshold")))
+        s.set_data("spi", result.get("spi"))
+        s.set_data("flagged", bool(result.get("flagged")))
         s.set_data("source", result.get("source"))
         emit(
             "info",
-            "sensor_check read curing telemetry",
+            "pace_check read earned-schedule pace",
             task_id=task_id,
             samples=result.get("samples"),
-            avg_temp_c=result.get("avg_temp_c"),
-            window_s=result.get("window_s"),
-            below_threshold=bool(result.get("below_threshold")),
+            spi=result.get("spi"),
+            zone_earned_days=result.get("zone_earned_days"),
+            flagged=bool(result.get("flagged")),
             source=result.get("source"),
         )
-    return {"sensor": result}
+    return {"pace": result}
 
 
 async def arbiter(state: VerifyState) -> dict:
@@ -257,7 +241,7 @@ async def _decide(state: VerifyState) -> dict:
     gz = state.get("gptzero") or {"ai_probability": 0.0, "flagged": False}
     vision = state.get("vision") or {}
     hist = state.get("historical") or {}
-    sensor = state.get("sensor") or {"samples": 0}
+    pace = state.get("pace") or {"samples": 0}
     canned = expected_for(task_id)
 
     observation = vision.get("observation", "No visual observation available.")
@@ -273,26 +257,10 @@ async def _decide(state: VerifyState) -> dict:
     coords = f"blueprint coordinates X:{task.get('x')} Y:{task.get('y')}"
     where = f"{task.get('name', task_id)} in {str(task.get('zone', '')).replace('_', ' ')}"
 
-    # Rule 0 — the sensor rule. A physical measurement contradicting the written
-    # claim, and the only rule allowed ahead of the AI gate: whether the prose was
-    # generated is irrelevant once the concrete itself is too cold to have cured.
-    # DISPUTED carries no confidence cap, so this outranks the gate's hold.
-    if sensor.get("below_threshold") and CURING_CLAIM_RE.search(state.get("claim") or ""):
-        status, branch = "DISPUTED", "sensor_conflict"
-        confidence = max(vis_conf, 0.9)
-        reasoning = (
-            f"The submitted claim for {where} describes concrete that has been poured, set or "
-            f"cured, and the site's own curing telemetry contradicts it. {observation} "
-            f"{hist_summary} This is raised as a dispute rather than a review hold because the "
-            f"conflict is between a written assertion and a measurement, not between two readings "
-            f"of the same ambiguous evidence."
-        )
-        request = SENSOR_REQUEST
-
     # Rule 1 — the AI gate. In strict mode a hard override, nothing downstream
     # can lift it. In lenient mode it does not fire at all and evaluation falls
     # through to the rules below.
-    elif ai_flagged and strict:
+    if ai_flagged and strict:
         status, branch = "UNDER_REVIEW", "ai_gate"
         confidence = min(vis_conf, 0.49)
         reasoning = (
@@ -340,6 +308,23 @@ async def _decide(state: VerifyState) -> dict:
         )
         request = None
 
+    # Rule 0' — the pace rule, checked before any approval. Prose and photograph
+    # both passed, but the site's own earned-schedule stream says this zone has
+    # produced no verified work in a week while the whole site paces under the
+    # SPI floor — a completion claim here is held for a field record rather
+    # than approved on evidence that outruns the measured pace.
+    elif pace.get("flagged") and COMPLETION_CLAIM_RE.search(state.get("claim") or ""):
+        status, branch = "UNDER_REVIEW", "pace_conflict"
+        confidence = min(vis_conf, 0.49)
+        reasoning = (
+            f"The submitted claim reports {where} as complete, and the site's own "
+            f"earned-schedule telemetry cannot support it. {observation} {hist_summary} "
+            f"JENGA holds the package rather than approving: the claim may be true, but "
+            f"approving it would mean crediting progress the site's measured pace has not "
+            f"produced. A dated field record resolves this in minutes."
+        )
+        request = PACE_REQUEST
+
     else:
         status, branch = "APPROVED", "approved"
         confidence = round(vis_conf, 2)
@@ -386,13 +371,11 @@ async def _decide(state: VerifyState) -> dict:
     else:
         request = None
 
-    # Rule 0's numbers, applied last for the same reason the advisory above is:
+    # Rule 0''s numbers, applied last for the same reason the advisory above is:
     # neither the demo's canned wording nor the request-clearing that every
-    # non-hold gets may swallow a physical measurement.
-    if branch == "sensor_conflict":
-        confidence = max(confidence, 0.9)
-        reasoning = f"{reasoning.rstrip()} {_sensor_sentence(sensor)}"
-        request = SENSOR_REQUEST
+    # non-hold gets may swallow the measured pace.
+    if branch == "pace_conflict":
+        reasoning = f"{reasoning.rstrip()} {_pace_sentence(pace)}"
 
     return {
         "branch": branch,
@@ -400,16 +383,15 @@ async def _decide(state: VerifyState) -> dict:
             "task_id": task_id,
             # Also on the verdict, not just the graph state: `main.verify` and the
             # trace both need to know *which rule decided*, and inferring it from
-            # (status, sensor.below_threshold) misreads any other rule's dispute on
-            # a ticket that happens to be cold. `schemas.Verdict` drops the key, so
-            # it stays an internal fact rather than part of the API.
+            # the status alone mislabels holds. `schemas.Verdict` drops the key,
+            # so it stays an internal fact rather than part of the API.
             "branch": branch,
             "status": status,
             "confidence": round(max(0.0, min(1.0, confidence)), 2),
             "reasoning": reasoning,
             "actionable_request": request,
             "gptzero": {"ai_probability": round(ai_prob, 3), "flagged": ai_flagged},
-            "sensor": sensor,
+            "pace": pace,
             "vision": {
                 "observation": observation,
                 "matches_claim": matches,
@@ -436,7 +418,7 @@ def _build_trace(state: VerifyState) -> list[dict]:
     gz = state.get("gptzero") or {}
     vision = state.get("vision") or {}
     hist = state.get("historical") or {}
-    sensor = state.get("sensor") or {"samples": 0}
+    pace = state.get("pace") or {"samples": 0}
     verdict = state.get("verdict") or {}
 
     ai_prob = float(gz.get("ai_probability", 0.0))
@@ -450,7 +432,7 @@ def _build_trace(state: VerifyState) -> list[dict]:
     hist_source = hist.get("source", "local corpus")
     hist_count = len(hist.get("packages") or [])
     status = verdict.get("status", "UNDER_REVIEW")
-    sensor_detail, sensor_signal = _sensor_card(sensor)
+    pace_detail, pace_signal = _pace_card(pace)
 
     if matches is True:
         vision_detail = f"Photo is consistent with the claim ({vis_conf:.0%} confidence)."
@@ -494,21 +476,21 @@ def _build_trace(state: VerifyState) -> list[dict]:
             "signal": "info",
         },
         {
-            "node": "sensor_check",
-            "title": "4 · Site telemetry",
-            "detail": sensor_detail,
-            "signal": sensor_signal,
+            "node": "pace_check",
+            "title": "4 · Site pace",
+            "detail": pace_detail,
+            "signal": pace_signal,
         },
         {
             "node": "arbiter",
             "title": "5 · Arbiter",
-            # A sensor dispute needs its own line: the generic one credits legible
-            # photographic evidence, and rule 0 fires on the thermometer whether a
-            # photograph was submitted or not. Keyed on the branch that actually
-            # decided — a cold ticket whose dispute came from the photograph is
-            # not a telemetry dispute, and this card must not say it was.
-            "detail": "Telemetry contradicts the written claim — disputed."
-            if state.get("branch") == "sensor_conflict"
+            # A pace hold needs its own line: the generic one blames insufficient
+            # evidence, and rule 0' fires on the measured pace however legible the
+            # photograph was. Keyed on the branch that actually decided — a hold
+            # that came from the AI gate on a slow site is not pace's doing, and
+            # this card must not say it was.
+            "detail": "Claim outruns the site's measured pace — held for a field record."
+            if state.get("branch") == "pace_conflict"
             else {
                 "APPROVED": "Sources agree — approved.",
                 "DISPUTED": "Sources conflict, evidence legible — disputed.",
@@ -525,13 +507,13 @@ _graph = StateGraph(VerifyState)
 _graph.add_node("gptzero_gate", gptzero_gate)
 _graph.add_node("vision_analysis", vision_analysis)
 _graph.add_node("historical_memory", historical_memory)
-_graph.add_node("sensor_check", sensor_check)
+_graph.add_node("pace_check", pace_check)
 _graph.add_node("arbiter", arbiter)
 _graph.add_edge(START, "gptzero_gate")
 _graph.add_edge("gptzero_gate", "vision_analysis")
 _graph.add_edge("vision_analysis", "historical_memory")
-_graph.add_edge("historical_memory", "sensor_check")
-_graph.add_edge("sensor_check", "arbiter")
+_graph.add_edge("historical_memory", "pace_check")
+_graph.add_edge("pace_check", "arbiter")
 _graph.add_edge("arbiter", END)
 GRAPH = _graph.compile()
 
@@ -593,7 +575,7 @@ async def verify_submission(
             # only the raw dict (which is what gets persisted) can see it.
             "gptzero": {"ai_probability": 0.0, "flagged": False, "scored": False},
             "vision": {"observation": "Vision analysis unavailable.", "matches_claim": None, "confidence": 0.0},
-            "sensor": {"samples": 0},
+            "pace": {"samples": 0},
             "evidence": {
                 "spec": task.get("spec_text", ""),
                 "claim": claim or "(no written or spoken claim submitted)",

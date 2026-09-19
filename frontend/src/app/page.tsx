@@ -10,7 +10,7 @@ import { AttributionLedger } from '@/components/AttributionLedger';
 import { SubmitUpdateModal } from '@/components/SubmitUpdateModal';
 import { ActivityRail, ActivityToggle } from '@/components/ActivityRail';
 import { MacroHeatmap } from '@/components/MacroHeatmap';
-import { SensorStrip } from '@/components/SensorStrip';
+import { PaceStrip } from '@/components/PaceStrip';
 import { DocumentUpload } from '@/components/DocumentUpload';
 import { useJenga } from '@/store/useJenga';
 
@@ -189,8 +189,8 @@ function SiteTab() {
         <VerifyRail />
       </div>
 
-      {/* Renders nothing until a non-pending ticket is selected. */}
-      <SensorStrip />
+      {/* Site pace at a glance — SPI, spend vs earned, projected finish. */}
+      <PaceStrip />
 
       {/* Schedule spans the full width along the bottom. */}
       <div className="min-h-[210px] flex-1 border-t border-slate-200">

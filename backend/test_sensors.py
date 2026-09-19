@@ -1,25 +1,23 @@
-"""Plain-assert checks for the curing-sensor stream and the arbiter's rule 0.
+"""Plain-assert checks for the site-event stream, the analytics, and rule 0'.
 
     cd backend && python test_sensors.py
 
-No pytest and no network. The storage is forced to mock, the asyncio loop is
-never started, and the simulator is driven tick by tick against a simulated
-clock so the averaging windows in the output are the ones a real run would show.
+No pytest and no network. Storage is forced to memory, the event store to mock,
+and history is written with explicit timestamps so the curves in the output are
+the ones a real run would show.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import os
-import random
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# Set before the first import of `integrations`: mock sensor storage, no live
+# Set before the first import of `integrations`: mock event storage, no live
 # calls, no shared database. load_dotenv() never overrides an already-set
 # variable, so these win over backend/.env.
 os.environ["JENGA_SENSORS"] = "0"
@@ -28,259 +26,191 @@ os.environ["JENGA_STORAGE"] = "memory"
 
 import db  # noqa: E402
 import seed as seed_module  # noqa: E402
-import sensors  # noqa: E402
-from agent import SENSOR_REQUEST, _build_trace, _decide, sensor_check  # noqa: E402
-from integrations import DATA_DIR, tiger  # noqa: E402
+import analytics  # noqa: E402
+from agent import PACE_REQUEST, _build_trace, _decide, pace_check  # noqa: E402
+from integrations import tiger  # noqa: E402
 
-TICKET = "P-106"
-TASKS = {t["id"]: t for t in json.loads((DATA_DIR / "seed_tasks.json").read_text())["tasks"]}
+TICKET = "P-112"  # escalator_well: a zone with no verified work in the seed
 
-#: A submission the sensors can contradict: legible photo, human-sounding prose.
+#: A submission pace can contradict: legible photo, human prose, "complete".
 BASE_STATE = {
-    "task": TASKS[TICKET],
-    "claim": "South platform pour complete and cured.",
+    "claim": "Escalator well forming complete, panels stripped and clean.",
     "strict": True,
     "gptzero": {"ai_probability": 0.04, "flagged": False},
     "vision": {
-        "observation": "Formwork is stripped and the slab surface is visible.",
+        "observation": "Formwork panels are stripped and the well walls are visible.",
         "matches_claim": True,
         "confidence": 0.9,
         "insufficient": False,
     },
-    "historical": {"summary": "Two comparable pours closed on schedule."},
+    "historical": {"summary": "Two comparable forming packages closed on schedule."},
 }
 
 
-async def reset_sim() -> None:
-    """Back to a process that has never seen a reading, over a freshly seeded set.
+def now() -> datetime:
+    return datetime.now(timezone.utc)
 
-    Re-seeding matters: the simulator only emits for `active` tickets, and case 5
-    runs a verify that moves this one to `disputed`.
-    """
-    tiger._mock.clear()
-    tiger._regime_since.clear()
-    sensors._mode.clear()
-    sensors._temp.clear()
+
+async def reseed(force: bool = True) -> None:
     await seed_module.seed()
-    assert any(t["id"] == TICKET and t["state"] == "active" for t in await db.tasks()), \
-        f"{TICKET} must be seeded active for the simulator to emit for it"
+    await analytics.reset() if force else analytics.seed_history()
 
 
-async def drive(n: int, end: datetime) -> None:
-    """`n` ticks one interval apart, the last of them stamped `end`."""
-    for i in range(n):
-        await sensors._tick(end - timedelta(seconds=sensors.TICK_S * (n - 1 - i)))
+async def drain_earned() -> None:
+    """Rebuild history as a clearly-behind site: one small verified event only,
+    so SPI lands under the floor and every zone but track_bed is in drought."""
+    await tiger.clear_events()
+    analytics._escalation = None
+    await tiger.record_event("P-101", "work_verified", 2.0, ts=now() - timedelta(days=10))
+    # Padding events so the history floor is met without earning anything.
+    for i in range(4):
+        await tiger.record_event(f"PO-000{i}", "po_created", 1500.0, ts=now() - timedelta(days=9 - i))
 
 
-def telemetry_card(state: dict) -> dict:
-    return next(c for c in _build_trace(state) if c["node"] == "sensor_check")
+def pace_card(state: dict) -> dict:
+    return next(c for c in _build_trace(state) if c["node"] == "pace_check")
 
 
 async def main() -> None:
-    print(f"JENGA sensor checks (telemetry={tiger.source()})\n" + "=" * 62)
+    print(f"JENGA pace & analytics checks (telemetry={tiger.source()})\n" + "=" * 62)
     await db.init()
+    await seed_module.seed()
+    task = next(t for t in await db.tasks() if t["id"] == TICKET)
+    state = {**BASE_STATE, "task": task}
 
-    # 1 — a normal pour is not below the curing minimum.
-    await reset_sim()
-    now = datetime.now(timezone.utc)
-    await drive(60, now)
-    normal = await tiger.curing_status(TICKET)
-    assert normal["samples"] == 60, normal
-    assert normal["below_threshold"] is False, normal
-    assert normal["window_s"] == normal["window_requested_s"] == 120, normal
-    print(f"PASS  60 normal readings -> avg {normal['avg_temp_c']} °C, below_threshold "
-          f"{normal['below_threshold']} over {normal['window_s']} s")
+    # 1 — seeded history produces a live S-curve with sane invariants.
+    await analytics.reset()
+    sched = await analytics.schedule_analysis()
+    assert sched["planned_total"] == 99.0, sched["planned_total"]
+    assert sched["earned_total"] == 20.0, sched["earned_total"]  # the 4 verified tasks
+    assert sched["spi"] and 0.5 < sched["spi"] <= 1.2, sched["spi"]
+    assert sched["points"][0]["planned"] == 0.0
+    planned_series = [p["planned"] for p in sched["points"]]
+    assert planned_series == sorted(planned_series), "planned curve must be monotonic"
+    earned_today = sched["points"][sched["today_day"]]["earned"]
+    assert earned_today == 20.0, earned_today
+    assert sched["points"][-1]["earned"] is None or sched["today_day"] >= len(sched["points"]) - 1, \
+        "earned curve must not claim the future"
+    print(f"PASS  seeded S-curve: planned {sched['planned_total']}d, earned {sched['earned_total']}d, "
+          f"SPI {sched['spi']}, projected slip {sched['projected_slip_days']}d")
 
-    # 2 — the cold scenario crosses the threshold inside 20 ticks (40 s).
-    await reset_sim()
-    now = datetime.now(timezone.utc)
-    sensors.set_scenario(TICKET, "cold")
-    # The snap happened 40 s ago on the simulated clock; the real one has not moved.
-    tiger._regime_since[TICKET] = now - timedelta(seconds=sensors.TICK_S * 20)
-    await drive(20, now)
-    cold = await tiger.curing_status(TICKET)
-    assert cold["samples"] == 20, cold
-    assert cold["below_threshold"] is True, cold
-    print(f"PASS  cold scenario, 20 ticks -> avg {cold['avg_temp_c']} °C, below_threshold "
-          f"{cold['below_threshold']} over {cold['window_s']} s")
+    # 2 — spend analytics: seeded POs commit real derived dollars, no escalation yet.
+    spend = await analytics.spend_analysis()
+    assert spend["committed_total"] > 50000, spend["committed_total"]
+    assert spend["committed_pct"] < analytics.ESCALATE_COMMIT_PCT, spend["committed_pct"]
+    assert spend["escalation"] is None, spend["escalation"]
+    assert len(spend["events"]) >= 4, len(spend["events"])
+    print(f"PASS  seeded spend: ${spend['committed_total']:,.0f} committed "
+          f"({spend['committed_pct']}% of budget), earned {spend['earned_pct']}%, no escalation")
 
-    # 3 — sensor_check reads that state and the arbiter disputes the claim.
-    read = await sensor_check({"task": TASKS[TICKET]})
-    assert read["sensor"]["below_threshold"] is True, read
-    disputed = await _decide({**BASE_STATE, "sensor": read["sensor"]})
-    verdict = disputed["verdict"]
-    assert verdict["status"] == "DISPUTED", verdict["status"]
-    assert disputed["branch"] == "sensor_conflict", disputed["branch"]
-    assert "10 °C" in verdict["reasoning"], verdict["reasoning"]
-    assert verdict["confidence"] >= 0.9, verdict["confidence"]
-    assert verdict["actionable_request"] == SENSOR_REQUEST, verdict["actionable_request"]
-    assert verdict["sensor"] == read["sensor"], verdict["sensor"]
-    card = telemetry_card({**BASE_STATE, "sensor": read["sensor"], "verdict": verdict})
-    assert card["title"] == "4 · Site telemetry" and card["signal"] == "bad", card
-    print(f"PASS  'pour cured' + cold telemetry -> {verdict['status']} "
-          f"(conf {verdict['confidence']}, branch {disputed['branch']})")
-    print(f"      card:   {card['detail']}")
-    print(f"      quotes: ...{verdict['reasoning'][-len(SENSOR_REQUEST) - 60:]}")
+    # 3 — healthy pace does not flag, and the arbiter approves.
+    read = await pace_check({"task": task})
+    assert read["pace"]["flagged"] is False, read["pace"]
+    approved = await _decide({**state, "pace": read["pace"]})
+    assert approved["verdict"]["status"] == "APPROVED", approved["verdict"]["status"]
+    assert approved["branch"] == "approved", approved["branch"]
+    card = pace_card({**state, "pace": read["pace"], "verdict": approved["verdict"]})
+    assert card["title"] == "4 · Site pace", card
+    assert card["signal"] in ("ok", "info"), card
+    print(f"PASS  healthy pace (SPI {read['pace']['spi']}) -> {approved['verdict']['status']}; "
+          f"card: {card['detail'][:70]}…")
 
-    # 4 — no telemetry changes nothing. A dead sensor stream must not move a verdict.
-    without = await _decide(dict(BASE_STATE))
-    empty = await _decide({**BASE_STATE, "sensor": {"samples": 0}})
-    assert without["verdict"]["status"] == empty["verdict"]["status"], (
-        without["verdict"]["status"], empty["verdict"]["status"])
-    assert without["branch"] == empty["branch"] != "sensor_conflict", (
-        without["branch"], empty["branch"])
-    assert without["verdict"]["reasoning"] == empty["verdict"]["reasoning"]
-    blank = telemetry_card({**BASE_STATE, "sensor": {"samples": 0}})
-    assert blank["detail"] == "No sensor telemetry for this ticket.", blank
-    assert blank["signal"] == "info", blank
-    print(f"PASS  no samples -> {empty['verdict']['status']} via {empty['branch']}, "
-          f"identical to the pre-sensor verdict")
+    # 4 — a clearly-behind site flags a completion claim in a drought zone, and
+    # the arbiter holds instead of approving.
+    await drain_earned()
+    slow = await analytics.pace_status(task)
+    assert slow["spi"] is not None and slow["spi"] < analytics.PACE_SPI_FLOOR, slow
+    assert slow["zone_earned_days"] == 0.0, slow
+    assert slow["samples"] >= analytics.PACE_MIN_EVENTS, slow
+    assert slow["flagged"] is True, slow
+    held = await _decide({**state, "pace": slow})
+    v = held["verdict"]
+    assert held["branch"] == "pace_conflict", held["branch"]
+    assert v["status"] == "UNDER_REVIEW", v["status"]
+    assert v["confidence"] <= 0.49, v["confidence"]
+    assert PACE_REQUEST.split(" Blueprint")[0] in (v["actionable_request"] or ""), v["actionable_request"]
+    assert "outruns" in v["reasoning"], v["reasoning"]
+    assert v["pace"] == slow, v["pace"]
+    card = pace_card({**state, "pace": slow, "verdict": v, "branch": "pace_conflict"})
+    assert card["signal"] == "bad", card
+    arb = next(c for c in _build_trace({**state, "pace": slow, "verdict": v, "branch": "pace_conflict"})
+               if c["node"] == "arbiter")
+    assert "measured pace" in arb["detail"], arb
+    print(f"PASS  SPI {slow['spi']} + drought in {slow['zone']} -> {v['status']} "
+          f"via {held['branch']}")
+    print(f"      card:   {card['detail'][:90]}…")
 
-    # 5 — precedence. Cold telemetry outranks the AI gate: a flagged report about
-    # a cold pour is DISPUTED, not the UNDER_REVIEW the gate alone would give.
-    flagged = {**BASE_STATE, "gptzero": {"ai_probability": 0.93, "flagged": True}}
-    gate_only = await _decide(flagged)
-    assert gate_only["verdict"]["status"] == "UNDER_REVIEW", gate_only["verdict"]["status"]
-    assert gate_only["branch"] == "ai_gate", gate_only["branch"]
-    both = await _decide({**flagged, "sensor": read["sensor"]})
-    assert both["verdict"]["status"] == "DISPUTED", both["verdict"]["status"]
-    assert both["branch"] == "sensor_conflict", both["branch"]
-    assert both["verdict"]["confidence"] >= 0.9, both["verdict"]["confidence"]
-    print(f"PASS  cold + AI-flagged, strict -> {both['verdict']['status']} "
-          f"(gate alone would give {gate_only['verdict']['status']})")
-
-    # ...and the route-level gate must not put itself back in front of rule 0.
-    import main
-    from schemas import VerifyRequest
-
-    async def stub_agent(task, report_text=None, image_base64=None, transcript=None, strict=True):
-        return dict(both["verdict"], task_id=task["id"])
-
-    main.verify_submission = stub_agent
-    routed = await main.verify(
-        TICKET, VerifyRequest(report_text=BASE_STATE["claim"]), strict=True
-    )
-    assert routed["status"] == "DISPUTED", routed["status"]
-    assert routed["actionable_request"] == SENSOR_REQUEST, routed["actionable_request"]
-    print(f"PASS  route-level gate leaves a sensor dispute alone -> {routed['status']}")
-
-    # 6 — the clamp. Readings from the previous curing regime are not averaged
-    # into the current one; without that, a two-minute mean full of warm samples
-    # hides a cold snap for over a minute. (This rule is why case 2 works at all.)
-    await reset_sim()
-    now = datetime.now(timezone.utc)
-    await drive(60, now - timedelta(seconds=26))  # warm, ending 26 s ago
-    sensors.set_scenario(TICKET, "cold")
-    tiger._regime_since[TICKET] = now - timedelta(seconds=24)
-    await drive(12, now)  # 12 cold ticks since the snap
-    clamped = await tiger.curing_status(TICKET)
-    # A range, not 24 exactly: the floor is measured against the real clock and
-    # rounds up, so a few milliseconds of test execution move it by one second.
-    # The claim being pinned is "clamped to ~24 s", not "clamped to 120 s".
-    assert 24 <= clamped["window_s"] <= 26, clamped
-    assert clamped["window_requested_s"] == 120, clamped
-    assert clamped["samples"] == 12, clamped
-    assert clamped["below_threshold"] is True, clamped
-    tiger._regime_since.clear()  # same readings, no regime floor
-    unclamped = await tiger.curing_status(TICKET)
-    assert unclamped["window_s"] == 120, unclamped
-    assert unclamped["below_threshold"] is False, unclamped
-    print(f"PASS  clamped to {clamped['window_s']} s -> avg {clamped['avg_temp_c']} °C "
-          f"(below); unclamped {unclamped['window_s']} s -> avg {unclamped['avg_temp_c']} °C (not)")
-    print(f"      card:   {telemetry_card({'sensor': clamped})['detail']}")
-
-    # 7 — the sample floor. Five cold readings average well under the threshold
-    # and still must not dispute anything: "too sparse to judge" is its own
-    # answer, and a verdict resting on five readings would not survive a judge
-    # asking how many readings it was based on.
-    await reset_sim()
-    random.seed(10)  # deterministic walk, so the averages below are not a coin flip
-    now = datetime.now(timezone.utc)
-    sensors.set_scenario(TICKET, "cold")
-    tiger._regime_since[TICKET] = now - timedelta(seconds=sensors.TICK_S * 5)
-    await drive(5, now)
-    sparse = await tiger.curing_status(TICKET)
-    assert sparse["samples"] == 5, sparse
-    assert sparse["min_samples"] == tiger.SENSOR_MIN_SAMPLES == 10, sparse
-    # The average really is below the threshold — the floor is what is gating,
-    # not a warm reading.
-    assert sparse["avg_temp_c"] < sparse["threshold_c"], sparse
-    assert sparse["below_threshold"] is False, sparse
-    thin = telemetry_card({"sensor": sparse})
+    # 5 — the history floor. The same slow site with too few events must not
+    # flag: "too little history to judge" is its own answer.
+    await tiger.clear_events()
+    await tiger.record_event("P-101", "work_verified", 2.0, ts=now() - timedelta(days=10))
+    sparse = await analytics.pace_status(task)
+    assert sparse["samples"] < analytics.PACE_MIN_EVENTS, sparse
+    assert sparse["flagged"] is False, sparse
+    thin = pace_card({"pace": sparse})
     assert thin["signal"] == "info", thin
-    assert "too sparse" in thin["detail"], thin
-    held = await _decide({**BASE_STATE, "sensor": sparse})
-    assert held["branch"] != "sensor_conflict", held["branch"]
-    assert held["verdict"]["status"] == without["verdict"]["status"], held["verdict"]["status"]
-    print(f"PASS  {sparse['samples']} cold readings avg {sparse['avg_temp_c']} °C -> "
-          f"below_threshold {sparse['below_threshold']} (floor {sparse['min_samples']}), "
-          f"verdict {held['verdict']['status']} via {held['branch']}")
-    print(f"      card:   {thin['detail']}")
+    assert "too thin" in thin["detail"], thin
+    not_held = await _decide({**state, "pace": sparse})
+    assert not_held["branch"] == "approved", not_held["branch"]
+    print(f"PASS  {sparse['samples']} events (floor {sparse['min_samples']}) -> flagged "
+          f"{sparse['flagged']}, verdict {not_held['verdict']['status']}")
 
-    # 8 — a dispute some *other* rule raised on a cold ticket is not a sensor
-    # dispute. Every active ticket streams telemetry and a cold-snapped one stays
-    # cold, so "DISPUTED and below_threshold" is not a usable stand-in for "rule 0
-    # fired": here the photograph contradicts a claim with no cure/pour/set word
-    # in it, so rule 0 cannot fire, and neither the route gate nor card 5 may
-    # treat the result as telemetry's doing.
-    brackets = {
-        "task": TASKS[TICKET],
-        "claim": "Handrail brackets installed along the platform edge, 1.2 m centres.",
-        "gptzero": {"ai_probability": 0.93, "flagged": True},
-        "vision": {
-            "observation": "The platform edge is bare; no brackets are visible.",
-            "matches_claim": False,
-            "confidence": 0.8,
-            "insufficient": False,
-        },
-        "historical": {"summary": "Two comparable fit-out packages closed on schedule."},
-        "sensor": read["sensor"],  # still below threshold from case 2
-    }
-    assert brackets["sensor"]["below_threshold"] is True, brackets["sensor"]
-    # Lenient, so the AI gate stands aside and the contradiction rule is reached
-    # with a flagged score — the shape that makes it to the route gate.
-    other = await _decide({**brackets, "strict": False})
-    assert other["branch"] == "contradiction", other["branch"]
-    assert other["verdict"]["status"] == "DISPUTED", other["verdict"]["status"]
-    assert other["verdict"]["branch"] == "contradiction", other["verdict"]["branch"]
-    assert other["verdict"]["actionable_request"] is None, other["verdict"]["actionable_request"]
-    assert "Contractor reports the pour as cured" not in other["verdict"]["reasoning"], \
-        other["verdict"]["reasoning"]
-    traced = {**brackets, "strict": False, **other}
-    arb = next(c for c in _build_trace(traced) if c["node"] == "arbiter")
-    assert "Telemetry" not in arb["detail"], arb
-    assert arb["detail"] == "Sources conflict, evidence legible — disputed.", arb
-    # Card 4 still reports the cold reading — that part is true and stays red.
-    cold_card = telemetry_card(traced)
-    assert cold_card["signal"] == "bad", cold_card
-    print(f"PASS  contradiction dispute on a cold ticket -> branch {other['branch']}, "
-          f"card 5 credits the photo not the sensor")
+    # 6 — pace only contests completion claims. A progress note on the same slow
+    # site sails through: there is no completion assertion to contradict.
+    await drain_earned()
+    progress = await _decide({
+        **state,
+        "claim": "Crew is prepping the escalator well; rebar arrives tomorrow.",
+        "pace": await analytics.pace_status(task),
+    })
+    assert progress["branch"] == "approved", progress["branch"]
+    print(f"PASS  progress note (no completion claim) -> {progress['verdict']['status']}")
 
-    async def stub_other(task, report_text=None, image_base64=None, transcript=None, strict=True):
-        return dict(other["verdict"], task_id=task["id"])
+    # 7 — no pace data changes nothing. A dead analytics path must not move a verdict.
+    without = await _decide(dict(state))
+    empty = await _decide({**state, "pace": {"samples": 0}})
+    assert without["verdict"]["status"] == empty["verdict"]["status"]
+    assert without["branch"] == empty["branch"] != "pace_conflict"
+    blank = pace_card({**state, "pace": {"samples": 0}})
+    assert blank["detail"] == "No site-pace history for this project yet.", blank
+    assert blank["signal"] == "info", blank
+    print(f"PASS  no history -> {empty['verdict']['status']} via {empty['branch']}, "
+          f"identical to the pace-free verdict")
 
-    main.verify_submission = stub_other
-    await reset_sim()  # case 5's verify left the ticket disputed
-    gated = await main.verify(
-        TICKET, VerifyRequest(report_text=brackets["claim"]), strict=True
-    )
-    assert gated["status"] == "UNDER_REVIEW", gated["status"]
-    assert gated["confidence"] <= 0.49, gated["confidence"]
-    assert "X:" in (gated["actionable_request"] or ""), gated["actionable_request"]
-    print(f"PASS  route gate still applies to it -> {gated['status']} "
-          f"(only branch sensor_conflict is exempt)")
+    # 8 — the escalation: individually-small POs cumulatively cross the line
+    # while earned work lags, fires exactly once, and lands in the event stream.
+    await drain_earned()
+    for i in range(6):
+        await tiger.record_event(
+            f"JENGA-T{i}", "po_created", 25000.0, ts=now() - timedelta(hours=6 - i)
+        )
+    esc = await analytics.check_escalation()
+    assert esc is not None, "escalation should fire on committed >> earned"
+    assert esc["committed_pct"] >= analytics.ESCALATE_COMMIT_PCT, esc
+    assert esc["committed_pct"] - esc["earned_pct"] >= analytics.ESCALATE_GAP_PTS, esc
+    assert "outrunning the build" in esc["message"], esc["message"]
+    assert esc["delivered"] in ("zip_comment", "local"), esc
+    again = await analytics.check_escalation()
+    assert again is esc or again == esc, "escalation must be sticky, not re-fired"
+    marks = [e for e in await tiger.events() if e["event"] == "escalation"]
+    assert len(marks) == 1, marks
+    spend2 = await analytics.spend_analysis()
+    assert spend2["escalation"] is not None, spend2
+    print(f"PASS  escalation fired once: {esc['committed_pct']}% committed vs "
+          f"{esc['earned_pct']}% earned ({esc['delivered']})")
+    print(f"      msg:    {esc['message'][:96]}…")
 
-    # Re-posting a mode is not a regime change and must not restart the window.
-    await reset_sim()
-    sensors.set_scenario(TICKET, "cold")
-    first = tiger._regime_since[TICKET]
-    sensors.set_scenario(TICKET, "cold")
-    assert tiger._regime_since[TICKET] == first, "re-posting the same mode restarted the window"
-    # And a ticket nobody has touched keeps the full window.
-    assert tiger.effective_window("P-999", 120) == 120
+    # 9 — reset restores the seeded baseline: escalation cleared, curves back.
+    await analytics.reset()
+    fresh = await analytics.spend_analysis()
+    assert fresh["escalation"] is None, fresh["escalation"]
+    assert fresh["committed_pct"] < analytics.ESCALATE_COMMIT_PCT, fresh["committed_pct"]
+    sched2 = await analytics.schedule_analysis()
+    assert sched2["earned_total"] == 20.0, sched2["earned_total"]
+    print(f"PASS  reset -> escalation cleared, earned back to {sched2['earned_total']}d")
 
     print("=" * 62)
-    print("All checks passed (8 cases).")
+    print("All checks passed (9 cases).")
 
 
 if __name__ == "__main__":
