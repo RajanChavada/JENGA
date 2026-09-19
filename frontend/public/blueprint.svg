@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800">
+  <!-- JENGA synthetic station plan. Coordinate space is authoritative: 1200x800.
+       Task x/y in data/seed_tasks.json are pixels in THIS space. Do not rescale independently. -->
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e3a5f" stroke-width="0.5" opacity="0.4"/>
+    </pattern>
+    <pattern id="hatch" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <line x1="0" y1="0" x2="0" y2="8" stroke="#2d5a8c" stroke-width="1" opacity="0.5"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="800" fill="#0a1628"/>
+  <rect width="1200" height="800" fill="url(#grid)"/>
+
+  <!-- station envelope -->
+  <rect x="40" y="40" width="1120" height="720" fill="none" stroke="#4a90d9" stroke-width="2"/>
+
+  <!-- MEZZANINE  (y 60-180) -->
+  <rect x="360" y="60" width="480" height="120" fill="url(#hatch)" stroke="#4a90d9" stroke-width="1.5"/>
+  <text x="372" y="80" fill="#7fb3e8" font-family="monospace" font-size="13" letter-spacing="1">MEZZANINE</text>
+  <text x="372" y="96" fill="#4a7ba8" font-family="monospace" font-size="10">TRANSFER SLAB · 40 MPa · 500mm</text>
+
+  <!-- STATION FIT-OUT zone (upper left) -->
+  <rect x="80" y="60" width="240" height="120" fill="none" stroke="#4a90d9" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="92" y="80" fill="#7fb3e8" font-family="monospace" font-size="13" letter-spacing="1">CONCOURSE</text>
+  <text x="92" y="96" fill="#4a7ba8" font-family="monospace" font-size="10">FIT-OUT / FARE GATES</text>
+
+  <!-- ESCALATOR WELL (right column, spans up) -->
+  <rect x="880" y="60" width="200" height="440" fill="none" stroke="#e8a33d" stroke-width="1.5"/>
+  <line x1="880" y1="60" x2="1080" y2="500" stroke="#e8a33d" stroke-width="0.8" opacity="0.5"/>
+  <line x1="1080" y1="60" x2="880" y2="500" stroke="#e8a33d" stroke-width="0.8" opacity="0.5"/>
+  <text x="892" y="80" fill="#e8a33d" font-family="monospace" font-size="13" letter-spacing="1">ESCALATOR WELL</text>
+  <text x="892" y="96" fill="#a8762c" font-family="monospace" font-size="10">PIT -5.1m · DEWATERING</text>
+
+  <!-- NORTH PLATFORM (y 200-320) -->
+  <rect x="160" y="200" width="880" height="120" fill="url(#hatch)" stroke="#4a90d9" stroke-width="1.5"/>
+  <text x="172" y="222" fill="#7fb3e8" font-family="monospace" font-size="13" letter-spacing="1">NORTH PLATFORM</text>
+  <text x="172" y="238" fill="#4a7ba8" font-family="monospace" font-size="10">30 MPa SLAB · 300mm · 15M @ 150 o.c.</text>
+  <line x1="160" y1="312" x2="1040" y2="312" stroke="#e8a33d" stroke-width="2" stroke-dasharray="4 3"/>
+
+  <!-- TRACK BED (y 340-460) -->
+  <rect x="60" y="340" width="1080" height="120" fill="#0d1f36" stroke="#4a90d9" stroke-width="1.5"/>
+  <text x="72" y="362" fill="#7fb3e8" font-family="monospace" font-size="13" letter-spacing="1">TRACK BED</text>
+  <text x="72" y="378" fill="#4a7ba8" font-family="monospace" font-size="10">35 MPa SLAB · 450mm · DIRECT FIXATION</text>
+  <!-- rails -->
+  <line x1="60" y1="408" x2="1140" y2="408" stroke="#5a7fa8" stroke-width="2.5"/>
+  <line x1="60" y1="432" x2="1140" y2="432" stroke="#5a7fa8" stroke-width="2.5"/>
+  <g stroke="#3a5a7f" stroke-width="1.5">
+    <line x1="100" y1="404" x2="100" y2="436"/><line x1="180" y1="404" x2="180" y2="436"/>
+    <line x1="260" y1="404" x2="260" y2="436"/><line x1="340" y1="404" x2="340" y2="436"/>
+    <line x1="420" y1="404" x2="420" y2="436"/><line x1="500" y1="404" x2="500" y2="436"/>
+    <line x1="580" y1="404" x2="580" y2="436"/><line x1="660" y1="404" x2="660" y2="436"/>
+    <line x1="740" y1="404" x2="740" y2="436"/><line x1="820" y1="404" x2="820" y2="436"/>
+    <line x1="900" y1="404" x2="900" y2="436"/><line x1="980" y1="404" x2="980" y2="436"/>
+    <line x1="1060" y1="404" x2="1060" y2="436"/>
+  </g>
+  <text x="1046" y="362" fill="#4a7ba8" font-family="monospace" font-size="10">GAUGE 1435mm</text>
+
+  <!-- SOUTH PLATFORM (y 480-600) -->
+  <rect x="160" y="480" width="880" height="120" fill="url(#hatch)" stroke="#4a90d9" stroke-width="1.5"/>
+  <line x1="160" y1="488" x2="1040" y2="488" stroke="#e8a33d" stroke-width="2" stroke-dasharray="4 3"/>
+  <text x="172" y="518" fill="#7fb3e8" font-family="monospace" font-size="13" letter-spacing="1">SOUTH PLATFORM</text>
+  <text x="172" y="534" fill="#4a7ba8" font-family="monospace" font-size="10">30 MPa SLAB · 300mm · 15M @ 150 o.c.</text>
+
+  <!-- shoring line along excavation -->
+  <rect x="60" y="620" width="1080" height="40" fill="none" stroke="#4a90d9" stroke-width="1" stroke-dasharray="3 3"/>
+  <text x="72" y="646" fill="#4a7ba8" font-family="monospace" font-size="10" letter-spacing="1">SOLDIER PILE + LAGGING SHORING · 2.4m o.c. · EXCAVATION -4.2m</text>
+
+  <!-- title block -->
+  <rect x="820" y="676" width="320" height="76" fill="#0d1f36" stroke="#4a90d9" stroke-width="1.5"/>
+  <line x1="820" y1="700" x2="1140" y2="700" stroke="#4a90d9" stroke-width="1"/>
+  <text x="832" y="694" fill="#7fb3e8" font-family="monospace" font-size="12" letter-spacing="1">EGLINTON WEST STATION</text>
+  <text x="832" y="716" fill="#4a7ba8" font-family="monospace" font-size="9">STRUCTURAL PACKAGE · PLAN VIEW</text>
+  <text x="832" y="730" fill="#4a7ba8" font-family="monospace" font-size="9">DWG S-201   REV 03   SCALE 1:200</text>
+  <text x="832" y="744" fill="#4a7ba8" font-family="monospace" font-size="9">ISSUED FOR CONSTRUCTION</text>
+
+  <!-- north arrow + scale -->
+  <g transform="translate(96,712)">
+    <path d="M 0 -22 L 8 10 L 0 4 L -8 10 Z" fill="#7fb3e8"/>
+    <text x="-5" y="26" fill="#7fb3e8" font-family="monospace" font-size="12">N</text>
+  </g>
+  <g transform="translate(180,724)">
+    <line x1="0" y1="0" x2="160" y2="0" stroke="#7fb3e8" stroke-width="1.5"/>
+    <line x1="0" y1="-5" x2="0" y2="5" stroke="#7fb3e8" stroke-width="1.5"/>
+    <line x1="80" y1="-4" x2="80" y2="4" stroke="#7fb3e8" stroke-width="1.5"/>
+    <line x1="160" y1="-5" x2="160" y2="5" stroke="#7fb3e8" stroke-width="1.5"/>
+    <text x="0" y="18" fill="#4a7ba8" font-family="monospace" font-size="9">0</text>
+    <text x="146" y="18" fill="#4a7ba8" font-family="monospace" font-size="9">20m</text>
+  </g>
+</svg>

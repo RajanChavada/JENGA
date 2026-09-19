@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --jenga-bg: #ffffff;
+  --jenga-surface: #f8fafc;
+  --jenga-border: #e5e7eb;
+  --jenga-text: #0f172a;
+  --jenga-muted: #64748b;
+}
+
+html,
+body {
+  height: 100%;
+  background: var(--jenga-bg);
+  color: var(--jenga-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* React Flow controls: keep them light, quiet, and flat. */
+.react-flow__controls {
+  box-shadow: none !important;
+  border: 1px solid var(--jenga-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.react-flow__controls-button {
+  background: #ffffff;
+  border-bottom: 1px solid var(--jenga-border);
+  fill: #475569;
+}
+.react-flow__controls-button:hover {
+  background: var(--jenga-surface);
+}
+
+/* MapLibre GL: strip default popup chrome so our own card shows through. */
+.maplibregl-popup-content {
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+}
+.maplibregl-popup-tip {
+  border-top-color: #ffffff !important;
+}
+.maplibregl-popup-anchor-bottom .maplibregl-popup-tip {
+  border-top-color: #ffffff !important;
+}
+.maplibregl-popup-anchor-top .maplibregl-popup-tip {
+  border-bottom-color: #ffffff !important;
+}
+.maplibregl-popup-close-button {
+  color: #94a3b8;
+  font-size: 18px;
+  padding: 4px 8px;
+}
+
+/* Navigation controls: light, minimal. */
+.maplibregl-ctrl-group {
+  background: #ffffff !important;
+  border: 1px solid var(--jenga-border) !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06) !important;
+}
+.maplibregl-ctrl-group button + button {
+  border-top: 1px solid var(--jenga-border) !important;
+}

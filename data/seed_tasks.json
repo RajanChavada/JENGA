@@ -1,0 +1,49 @@
+{
+  "project": "Eglinton West Station — Structural Package",
+  "blueprint": { "width": 1200, "height": 800, "src": "/blueprint.svg" },
+  "tasks": [
+    { "id": "P-101", "name": "Site Excavation",        "zone": "track_bed",       "x": 160,  "y": 400, "duration_days": 5,  "state": "verified", "spec_text": "Excavate to 4.2m below grade across Sector A. Tolerance +/- 50mm. Shoring required beyond 3m depth per OBC 4.2.3." },
+    { "id": "P-102", "name": "Shoring Installation",   "zone": "track_bed",       "x": 340,  "y": 400, "duration_days": 4,  "state": "verified", "spec_text": "Install soldier pile and lagging shoring system. Pile spacing 2.4m o.c. Deflection monitoring required." },
+    { "id": "P-103", "name": "Track Bed Subgrade",     "zone": "track_bed",       "x": 560,  "y": 400, "duration_days": 6,  "state": "verified", "spec_text": "Compact granular subgrade to 98% SPMDD. Proof roll required prior to concrete." },
+    { "id": "P-104", "name": "Track Bed Concrete Pour","zone": "track_bed",       "x": 780,  "y": 400, "duration_days": 8,  "state": "active",   "spec_text": "Pour 35 MPa concrete track slab, 450mm depth. Rebar 15M @ 150mm o.c. both ways per ASTM A615. Cure 7 days minimum." },
+    { "id": "P-105", "name": "South Platform Rebar",   "zone": "south_platform",  "x": 340,  "y": 540, "duration_days": 5,  "state": "verified", "spec_text": "Place and tie 15M rebar grid @ 150mm o.c. across south platform slab. All intersections tied. Cover 50mm." },
+    { "id": "P-106", "name": "South Platform Pour",    "zone": "south_platform",  "x": 640,  "y": 540, "duration_days": 7,  "state": "active",   "spec_text": "Pour 30 MPa platform slab, 300mm depth. Broom finish. Edge tolerance +/- 6mm over 3m straightedge." },
+    { "id": "P-107", "name": "North Platform Rebar",   "zone": "north_platform",  "x": 340,  "y": 260, "duration_days": 5,  "state": "active",   "spec_text": "Place and tie 15M rebar grid @ 150mm o.c. across north platform slab. All intersections tied. Cover 50mm." },
+    { "id": "P-108", "name": "North Platform Pour",    "zone": "north_platform",  "x": 640,  "y": 260, "duration_days": 7,  "state": "pending",  "spec_text": "Pour 30 MPa platform slab, 300mm depth. Broom finish. Edge tolerance +/- 6mm over 3m straightedge." },
+    { "id": "P-109", "name": "Mezzanine Slab Rebar",   "zone": "mezzanine",       "x": 480,  "y": 120, "duration_days": 4,  "state": "pending",  "spec_text": "Place 20M rebar mat for mezzanine transfer slab. Two-way grid @ 200mm o.c." },
+    { "id": "P-110", "name": "Mezzanine Slab Pour",    "zone": "mezzanine",       "x": 700,  "y": 120, "duration_days": 6,  "state": "pending",  "spec_text": "Pour 40 MPa mezzanine slab, 500mm depth. Shoring to remain 14 days." },
+    { "id": "P-111", "name": "Escalator Well Excavation","zone": "escalator_well","x": 960,  "y": 440, "duration_days": 5,  "state": "pending",  "spec_text": "Excavate escalator pit to 5.1m. Dewatering system required. Base slab 300mm mud mat." },
+    { "id": "P-112", "name": "Escalator Well Forming", "zone": "escalator_well",  "x": 960,  "y": 260, "duration_days": 4,  "state": "pending",  "spec_text": "Form escalator well walls. Formwork to withstand 60 kPa. Form release agent required." },
+    { "id": "P-113", "name": "Escalator Installation", "zone": "escalator_well",  "x": 960,  "y": 120, "duration_days": 6,  "state": "pending",  "spec_text": "Install two heavy-duty transit escalators. Pit tolerance +/- 10mm. Manufacturer supervision required." },
+    { "id": "P-114", "name": "Track Laying",           "zone": "track_bed",       "x": 1060, "y": 370, "duration_days": 10, "state": "pending",  "spec_text": "Install direct-fixation track, 1435mm gauge. Alignment tolerance +/- 3mm. Third rail brackets per drawing E-402." },
+    { "id": "P-115", "name": "Platform Edge Finishing","zone": "south_platform",  "x": 880,  "y": 540, "duration_days": 5,  "state": "pending",  "spec_text": "Install tactile warning strips and platform edge copings both platforms. Gap to vehicle 75mm max." },
+    { "id": "P-116", "name": "Station Fit-Out",        "zone": "mezzanine",       "x": 200,  "y": 120, "duration_days": 12, "state": "pending",  "spec_text": "Architectural fit-out: cladding, lighting, wayfinding, fare gates. Coordination with systems contractor required." }
+  ],
+  "edges": [
+    { "source": "P-101", "target": "P-102" },
+    { "source": "P-102", "target": "P-103" },
+    { "source": "P-102", "target": "P-105" },
+    { "source": "P-102", "target": "P-107" },
+    { "source": "P-103", "target": "P-104" },
+    { "source": "P-104", "target": "P-111" },
+    { "source": "P-104", "target": "P-114" },
+    { "source": "P-105", "target": "P-106" },
+    { "source": "P-107", "target": "P-108" },
+    { "source": "P-106", "target": "P-109" },
+    { "source": "P-108", "target": "P-109" },
+    { "source": "P-106", "target": "P-115" },
+    { "source": "P-108", "target": "P-115" },
+    { "source": "P-109", "target": "P-110" },
+    { "source": "P-111", "target": "P-112" },
+    { "source": "P-112", "target": "P-113" },
+    { "source": "P-110", "target": "P-113" },
+    { "source": "P-113", "target": "P-116" },
+    { "source": "P-115", "target": "P-116" }
+  ],
+  "purchase_orders": [
+    { "id": "PO-8821", "material": "Ready-Mix Concrete 35 MPa", "quantity": "450 m3", "vendor": "Dufferin Concrete", "delivery_date": "2026-09-28", "status": "confirmed", "linked_task": "P-104", "last_action": null },
+    { "id": "PO-8834", "material": "15M Rebar",                 "quantity": "12 tonnes","vendor": "Harris Rebar",      "delivery_date": "2026-09-24", "status": "confirmed", "linked_task": "P-107", "last_action": null },
+    { "id": "PO-8840", "material": "Granular A Aggregate",      "quantity": "20 tonnes","vendor": "CRH Canada",        "delivery_date": "2026-09-22", "status": "confirmed", "linked_task": "P-103", "last_action": null },
+    { "id": "PO-8852", "material": "Form Release Agent",        "quantity": "5 gal",    "vendor": "Sika Canada",       "delivery_date": "2026-09-26", "status": "confirmed", "linked_task": "P-112", "last_action": null }
+  ]
+}

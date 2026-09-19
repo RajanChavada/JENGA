@@ -1,14 +1,24 @@
+# Optional. The app defaults to JENGA_STORAGE=memory and needs none of this.
+# Only bring this up if you want the Postgres/pgvector path for the demo.
+#   docker compose up -d
+#   export JENGA_STORAGE=postgres
+#   export DATABASE_URL=postgresql+asyncpg://jenga:jenga@localhost:5433/jenga
+
 services:
-  postgres:
-    image: postgres:16
+  db:
+    image: timescale/timescaledb-ha:pg16
     environment:
       POSTGRES_USER: jenga
       POSTGRES_PASSWORD: jenga
       POSTGRES_DB: jenga
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - jenga_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jenga"]
+      interval: 5s
+      retries: 10
 
 volumes:
-  pgdata:
+  jenga_pg:
