@@ -52,6 +52,12 @@ assert crit["affected"][0]["id"] == "P-104"
 ids = [a["id"] for a in crit["affected"]]
 assert {"P-111", "P-112", "P-113", "P-116"} <= set(ids), ids  # its dependants move
 assert next(a for a in crit["affected"] if a["id"] == "P-116")["newly_late"], crit["affected"]
+# the same prediction as day offsets, which is what the schedule draws
+assert crit["baseline_finish_day"] == 50 and crit["predicted_finish_day"] == 52 and crit["deadline_day"] == 50, crit
+first = crit["affected"][0]
+assert first["finish_day_after"] - first["finish_day_before"] == 2 and first["due_day"] == first["finish_day_before"], first
+last = next(a for a in crit["affected"] if a["id"] == "P-116")
+assert (last["finish_day_before"], last["finish_day_after"], last["due_day"]) == (50, 52, 50), last
 print("PASS  critical-task denial slips the project and breaches the deadline")
 
 # --- a task with float: absorbed, nothing late ---------------------------------

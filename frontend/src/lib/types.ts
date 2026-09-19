@@ -229,6 +229,10 @@ export interface ImpactedTask {
   name: string;
   finish_date_before: string;
   finish_date_after: string;
+  /** Day offsets on the schedule's axis; absent on impacts stored before they existed. */
+  finish_day_before?: number | null;
+  finish_day_after?: number | null;
+  due_day?: number | null;
   due_date: string | null;
   late_by_days: number;
   newly_late: boolean;
@@ -242,6 +246,9 @@ export interface Impact {
   float_consumed: number;
   absorbed_by_float: boolean;
   project_slipped_days: number;
+  baseline_finish_day?: number | null;
+  predicted_finish_day?: number | null;
+  deadline_day?: number | null;
   baseline_finish_date: string;
   predicted_finish_date: string;
   project_deadline_date: string;

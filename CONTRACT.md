@@ -148,12 +148,24 @@ derived-`blocked` task.
   (`?view=contractor`) reduces it to `{ rework_days, predicted_finish_date, project_slipped_days }`.
 
 ```ts
+**Schedule view of reviews (owner only).** The schedule shows a `Review` badge on tasks with an update
+awaiting the owner and a `N awaiting review` chip. One prediction is *primary*: the hovered review card,
+else the selected task's pending (or denied) update. It draws hatched extensions on each affected bar, a
+predicted-finish line and the deadline, and stretches the axis while shown. Every other still-denied
+task keeps its own faint extension until the contractor resubmits or it is approved. The Reviews panel
+is a docked right rail (no modal). `Impact` therefore also carries day offsets (additive; older stored
+impacts without them are simply not drawn): `baseline_finish_day`, `predicted_finish_day`,
+`deadline_day`, and per affected task `finish_day_before`, `finish_day_after`, `due_day`.
+
+```ts
 interface Impact {
   task_id: string; rework_days: number; rationale: string[];
   float_consumed: number; absorbed_by_float: boolean; project_slipped_days: number;
   baseline_finish_date: string; predicted_finish_date: string; project_deadline_date: string;
   days_past_deadline: number; critical_path_changed: boolean;
+  baseline_finish_day?: number; predicted_finish_day?: number; deadline_day?: number;  // day offsets
   affected: { id: string; name: string; finish_date_before: string; finish_date_after: string;
+              finish_day_before?: number; finish_day_after?: number; due_day?: number;
               due_date: string | null; late_by_days: number; newly_late: boolean }[];
 }
 ```
