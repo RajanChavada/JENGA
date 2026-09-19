@@ -3,20 +3,65 @@
 Demo from `localhost` if you can — it's faster and has no cold starts. Hosting exists so judges
 and teammates can hit a URL, and because Vultr is a sponsor track.
 
+## The two GitHub repos, and how they stay in sync
+
+Both repos carry the full app on `main` (synced 2026-09-19):
+
+- **https://github.com/RajanChavada/JENGA** — team repo, `main` accepts direct pushes. Vercel
+  should watch this one.
+- **https://github.com/TheFJcurve/JENGA** — `main` is protected: PR-only, squash/rebase merges.
+
+The local checkout's `origin` remote is configured with **two push URLs**, so one command
+updates the feature branch on both repos:
+
+```bash
+git push origin feat/light-theme-map-zip-rox     # lands on BOTH repos
+```
+
+(A GitHub Actions mirror was considered and rejected: the default `GITHUB_TOKEN` cannot push
+to a different repository, and we have no cross-repo PAT to store as a secret.)
+
+Updating `main` after new work on the branch:
+
+```bash
+# RajanChavada (direct merge allowed):
+gh pr create --repo RajanChavada/JENGA --base main --head feat/light-theme-map-zip-rox --fill
+gh pr merge --repo RajanChavada/JENGA --merge
+
+# TheFJcurve (PR-only, no merge commits):
+git push origin feat/light-theme-map-zip-rox:sync-main-full-app
+gh pr create --repo TheFJcurve/JENGA --base main --head sync-main-full-app --fill
+gh pr merge --repo TheFJcurve/JENGA --squash
+```
+
 ## Frontend → Vercel
+
+One-time setup (interactive login, then link + deploy):
 
 ```bash
 cd frontend
+npx vercel login                 # browser auth
+npx vercel link                  # create the project (root = frontend/)
+npx vercel env add NEXT_PUBLIC_USE_FIXTURES production   # value: 1 (until the backend is live)
 npx vercel --prod
 ```
 
-Set in the Vercel dashboard:
-```
-NEXT_PUBLIC_API_URL=https://<backend-host>
+Then connect GitHub for auto-deploys on every push to `main`:
+
+```bash
+npx vercel git connect https://github.com/RajanChavada/JENGA
 ```
 
-Fully static fallback if the backend isn't up yet — set `NEXT_PUBLIC_USE_FIXTURES=1` and the app
-runs entirely on `data/*.json`. The demo works with nothing else deployed.
+In the Vercel dashboard set the project **Root Directory to `frontend/`** (the repo root also
+contains the portal app and the FastAPI backend). Once the backend is hosted, replace the
+fixtures flag:
+
+```
+NEXT_PUBLIC_API_URL=https://<backend-host>   # and remove NEXT_PUBLIC_USE_FIXTURES
+```
+
+Fully static fallback if the backend isn't up yet — `NEXT_PUBLIC_USE_FIXTURES=1` runs the app
+entirely on `data/*.json`. The demo works with nothing else deployed.
 
 ## Backend → Vultr (sponsor track)
 
