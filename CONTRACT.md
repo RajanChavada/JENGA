@@ -55,7 +55,13 @@ interface Verdict {
   reasoning: string;
   actionable_request: string | null;  // set when UNDER_REVIEW
   gptzero: { ai_probability: number; flagged: boolean };
-  vision: { observation: string; matches_claim: boolean | null };
+  vision: {
+    observation: string;
+    matches_claim: boolean | null;  // false = image CONTRADICTS the claim -> DISPUTED
+                                    // null  = image CANNOT ESTABLISH anything -> UNDER_REVIEW
+                                    // these two are not the same and must not be collapsed
+    confidence: number;             // 0..1, vision's own confidence, distinct from top-level
+  };
   evidence: {                         // the 4 VerdictPanel columns
     spec: string;
     claim: string;
