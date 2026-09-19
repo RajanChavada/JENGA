@@ -1,15 +1,14 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { ArrowLeft, ArrowRight } from 'lucide-react';
 import { WorkGraph } from '@/components/WorkGraph';
 import { Timeline } from '@/components/Timeline';
 import { VerdictPanel, AgentRunning } from '@/components/VerdictPanel';
 import { AttributionLedger } from '@/components/AttributionLedger';
-import { ApprovalQueue } from '@/components/ApprovalQueue';
-import { ContractorPortal } from '@/components/ContractorPortal';
-import { RoleSwitcher } from '@/components/RoleSwitcher';
+import { SubmitUpdateModal } from '@/components/SubmitUpdateModal';
+import { ActivityRail, ActivityToggle } from '@/components/ActivityRail';
 import { MacroHeatmap } from '@/components/MacroHeatmap';
 import { SensorStrip } from '@/components/SensorStrip';
 import { DocumentUpload } from '@/components/DocumentUpload';
@@ -31,12 +30,9 @@ export default function Home() {
   const setStrict = useJenga((s) => s.setStrict);
   const view = useJenga((s) => s.view);
   const setView = useJenga((s) => s.setView);
+  const microTab = useJenga((s) => s.microTab);
+  const setMicroTab = useJenga((s) => s.setMicroTab);
   const siteName = useJenga((s) => s.activeSiteName);
-  const role = useJenga((s) => s.role);
-  const restoreIdentity = useJenga((s) => s.restoreIdentity);
-  const refreshPortal = useJenga((s) => s.refreshPortal);
-  const [show3d, setShow3d] = useState(true);
-  const isOwner = role === 'owner';
 
   // Two different questions, and they can disagree: a project that exists but
   // has no tickets yet is onboarded with nothing to draw.
@@ -50,10 +46,8 @@ export default function Home() {
   const hasGraph = useJenga((s) => s.tasks.length > 0);
 
   useEffect(() => {
-    restoreIdentity();
-    // The graph first (the map and graph views paint from it), then whoever is looking.
-    void load().then(() => refreshPortal());
-  }, [load, restoreIdentity, refreshPortal]);
+    void load();
+  }, [load]);
 
   return (
     <main className="flex h-screen flex-col overflow-hidden bg-white text-slate-900">
@@ -75,107 +69,154 @@ export default function Home() {
         </div>
 
         <div className="flex items-center gap-2">
-          <RoleSwitcher />
-          {isOwner && (
-            <>
-              <div className="flex overflow-hidden rounded-md border border-slate-200 text-xs">
-                {(['macro', 'micro'] as const).map((v) => (
-                  <button
-                    key={v}
-                    onClick={() => setView(v)}
-                    className={`px-2.5 py-1.5 capitalize transition-colors ${
-                      view === v
-                        ? 'bg-slate-900 text-white'
-                        : 'bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-900'
-                    }`}
-                  >
-                    {v}
-                  </button>
-                ))}
-              </div>
+          <div className="flex overflow-hidden rounded-md border border-slate-200 text-xs">
+            {(['macro', 'micro'] as const).map((v) => (
               <button
-                onClick={() => setShow3d((v) => !v)}
-                disabled={view === 'macro' || !onboarded}
-                className="rounded-md border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-40"
-              >
-                {show3d ? 'Hide 3D' : 'Show 3D'}
-              </button>
-              <button
-                onClick={() => void reset()}
-                // There is no graph to put back on a site with no project behind
-                // it, and the store refuses the reload rather than pulling the
-                // default project's tasks onto someone else's pin. Say so here
-                // instead of leaving a button that looks live and does nothing.
-                disabled={!onboarded}
-                title={onboarded ? undefined : 'Nothing to reset — this site has no schedule yet'}
-                className="rounded-md border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-40"
-              >
-                Reset
-              </button>
-              <button
-                onClick={() => setStrict(!strict)}
-                aria-pressed={strict}
-                title="Hard-gate AI-written reports (Rox) / advisory only (main)"
-                className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs transition-colors ${
-                  strict
-                    ? 'border-slate-900 bg-slate-900 text-white'
-                    : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-900'
+                key={v}
+                onClick={() => setView(v)}
+                className={`px-2.5 py-1.5 capitalize transition-colors ${
+                  view === v
+                    ? 'bg-slate-900 text-white'
+                    : 'bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-900'
                 }`}
               >
-                <span
-                  className={`h-1.5 w-1.5 rounded-full ${strict ? 'bg-emerald-400' : 'bg-slate-300'}`}
-                />
-                Strict
+                {v}
               </button>
-              {/* Contractors submit from their own portal; the owner reviews here. */}
-              <ApprovalQueue />
-            </>
+            ))}
+          </div>
+
+          {/* Within a site: the work surface, or procurement + the ledger. */}
+          {view === 'micro' && hasGraph && (
+            <div className="flex overflow-hidden rounded-md border border-slate-200 text-xs">
+              {(['site', 'procurement'] as const).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setMicroTab(t)}
+                  className={`px-2.5 py-1.5 capitalize transition-colors ${
+                    microTab === t
+                      ? 'bg-slate-900 text-white'
+                      : 'bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-900'
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
           )}
+
+          <button
+            onClick={() => void reset()}
+            // There is no graph to put back on a site with no project behind
+            // it, and the store refuses the reload rather than pulling the
+            // default project's tasks onto someone else's pin. Say so here
+            // instead of leaving a button that looks live and does nothing.
+            disabled={!onboarded}
+            title={onboarded ? undefined : 'Nothing to reset — this site has no schedule yet'}
+            className="rounded-md border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-40"
+          >
+            Reset
+          </button>
+          <button
+            onClick={() => setStrict(!strict)}
+            aria-pressed={strict}
+            title="Hard-gate AI-written reports (Rox) / advisory only (main)"
+            className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs transition-colors ${
+              strict
+                ? 'border-slate-900 bg-slate-900 text-white'
+                : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-900'
+            }`}
+          >
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${strict ? 'bg-emerald-400' : 'bg-slate-300'}`}
+            />
+            Strict
+          </button>
+          {/* No graph, nothing to submit against — and a submission here would
+              404 on the backend and retire the session to fixtures. */}
+          {hasGraph && <SubmitUpdateModal />}
+          <ActivityToggle />
         </div>
       </header>
 
+      {/* The wrapper is load-bearing: every body panel sizes itself with
+          h-full/w-full, so it needs a flex-1 parent to fill. Without it the
+          map canvas collapses to zero width and only the side panel renders. */}
       <div className="flex min-h-0 flex-1">
         <div className="relative min-w-0 flex-1">
-          {!isOwner ? (
-            <ContractorPortal />
-          ) : loading ? (
-            <div className="flex h-full items-center justify-center text-xs text-slate-400">
+          {loading ? (
+            <div className="flex h-full w-full items-center justify-center text-xs text-slate-400">
               loading graph…
             </div>
           ) : view === 'macro' ? (
             <MacroHeatmap onOpenSite={(hotzone) => void loadSite(hotzone.id)} />
           ) : !hasGraph ? (
             <OnboardSite />
+          ) : microTab === 'procurement' ? (
+            <AttributionLedger />
           ) : (
-            <div className="flex h-full min-h-0 flex-col">
-              <div className="relative min-h-0 flex-[2]">
-                <WorkGraph />
-                <AgentRunning />
-                <VerdictPanel />
-              </div>
-              {/* Under the DAG, above the schedule. Renders nothing until a
-                  non-pending ticket is selected. */}
-              <SensorStrip />
-              <div className="min-h-[210px] flex-1 border-t border-slate-200">
-                <Timeline />
-              </div>
-            </div>
+            <SiteTab />
           )}
         </div>
 
-        {/* Both rails follow the body, not the site. If a project ever comes
-            back with no tickets, `onboarded` and `hasGraph` disagree, and
-            gating these on the site would leave a digital twin and a delay
-            ledger flanking a panel that says the site has no drawings. */}
-        {isOwner && view === 'micro' && hasGraph && show3d && (
-          <div className="h-full w-[360px] shrink-0 border-l border-slate-200">
-            <StationView />
-          </div>
-        )}
-
-        {isOwner && view === 'micro' && hasGraph && <AttributionLedger />}
+        {/* The agentic-work confirmation surface, on every view. */}
+        <ActivityRail />
       </div>
     </main>
+  );
+}
+
+/**
+ * The work surface, consolidated.
+ *
+ * Blueprint graph on the left, digital twin directly beside it on the right, the
+ * schedule spanning the full width underneath, and the agent's verdict in a
+ * right rail that only takes space when there is something to say — so the
+ * blueprint is never covered by the panel describing it. This is the layout the
+ * restructure was for: one primary thing per region instead of five panels
+ * fighting over one viewport.
+ */
+function SiteTab() {
+  return (
+    <div className="flex h-full min-h-0 w-full flex-col">
+      {/* Top band: blueprint + twin side by side, verdict/pipeline rail on the right. */}
+      <div className="flex min-h-0 flex-[2]">
+        <div className="min-w-0 flex-1 border-r border-slate-200">
+          <WorkGraph />
+        </div>
+        <div className="hidden min-w-0 flex-1 border-r border-slate-200 lg:block">
+          <StationView />
+        </div>
+        <VerifyRail />
+      </div>
+
+      {/* Renders nothing until a non-pending ticket is selected. */}
+      <SensorStrip />
+
+      {/* Schedule spans the full width along the bottom. */}
+      <div className="min-h-[210px] flex-1 border-t border-slate-200">
+        <Timeline />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The verify rail: the agent pipeline while a submission runs, then the verdict.
+ * Collapses to zero width when idle so the blueprint and twin get the room.
+ */
+function VerifyRail() {
+  const busy = useJenga((s) => s.busy);
+  const cascading = useJenga((s) => s.cascading);
+  const verdict = useJenga((s) => s.verdict);
+  const active = (busy && !cascading) || !!verdict;
+
+  if (!active) return null;
+
+  return (
+    <aside className="w-[360px] shrink-0 overflow-auto bg-slate-50 p-3">
+      <AgentRunning />
+      <VerdictPanel />
+    </aside>
   );
 }
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useMemo, useRef } from 'react';
+import { Suspense, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { Billboard, OrbitControls, Text } from '@react-three/drei';
 import type { Mesh, MeshStandardMaterial } from 'three';
@@ -83,6 +83,11 @@ export function StationView() {
   const tasks = useJenga((s) => s.tasks);
   const selectedZone = useJenga((s) => s.selectedZone);
   const selectZone = useJenga((s) => s.selectZone);
+  // WebGL contexts get evicted by the browser under pressure (and by dev-server
+  // reload churn), leaving a correctly-sized but permanently blank canvas.
+  // Bumping this key remounts the <Canvas>, which creates a fresh context —
+  // the twin heals itself instead of sitting white until a tab switch.
+  const [glGeneration, setGlGeneration] = useState(0);
 
   const byZone = useMemo(() => {
     const m = {} as Record<Zone, Task[]>;
@@ -98,7 +103,16 @@ export function StationView() {
         Digital twin · click a zone to select its work
       </div>
       {/* Zones span ~14 units; pull back far enough to frame the whole station. */}
-      <Canvas camera={{ position: [22, 17, 22], fov: 40 }}>
+      <Canvas
+        key={glGeneration}
+        camera={{ position: [22, 17, 22], fov: 40 }}
+        onCreated={({ gl }) => {
+          gl.domElement.addEventListener('webglcontextlost', (e) => {
+            e.preventDefault();
+            setGlGeneration((g) => g + 1);
+          });
+        }}
+      >
         <ambientLight intensity={0.75} />
         <directionalLight position={[10, 14, 8]} intensity={0.9} />
         <gridHelper args={[30, 30, '#cbd5e1', '#e2e8f0']} position={[0, -0.6, 0]} />

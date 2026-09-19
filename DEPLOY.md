@@ -20,23 +20,34 @@ runs entirely on `data/*.json`. The demo works with nothing else deployed.
 
 ## Backend → Vultr (sponsor track)
 
-Claim credits, spin up the cheapest Ubuntu instance, then:
+**HTTPS is not optional.** The Vercel frontend is served over https, and browsers refuse
+mixed-content calls to `http://<ip>:8000` — every request would fail silently in the demo.
+The setup script puts Caddy (automatic Let's Encrypt) in front of uvicorn.
+
+Claim credits, spin up the cheapest Ubuntu instance, then one command:
 
 ```bash
 ssh root@<ip>
-apt update && apt install -y python3.11 python3.11-venv git
-git clone <repo> && cd jenga/backend
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-JENGA_OFFLINE=1 JENGA_STORAGE=memory \
-  uvicorn main:app --host 0.0.0.0 --port 8000
+curl -fsSL https://raw.githubusercontent.com/TheFJcurve/JENGA/feat/light-theme-map-zip-rox/deploy/setup-backend.sh | bash
 ```
 
-Keep `JENGA_STORAGE=memory` unless you specifically want to demo the Postgres path — it removes
-a whole class of 3am failure. Put it behind `tmux` or a systemd unit so an SSH drop doesn't kill
-the demo.
+That installs Python + Caddy, clones the repo to `/opt/jenga`, creates the venv, writes a
+systemd unit (`jenga-backend`, restarts on crash and reboot), and serves HTTPS on
+`<ip>.sslip.io` — a real certificate with zero DNS setup. Pass your GoDaddy domain as an
+argument once its A record points at the box: `... | bash -s -- api.yourdomain.com`.
 
-Open port 8000 in the Vultr firewall.
+Then add keys (all optional — each flips a mock to live) and restart:
+
+```bash
+nano /etc/jenga.env        # OPENAI_API_KEY, GPTZERO_API_KEY, ZIP_API_KEY, BROWSERBASE_*
+systemctl restart jenga-backend
+journalctl -u jenga-backend -f
+```
+
+Firewall: allow **80 and 443** (Caddy). Port 8000 stays loopback-only.
+
+Keep `JENGA_STORAGE=memory` unless you specifically want to demo the Postgres path — it removes
+a whole class of 3am failure.
 
 ## Domain → GoDaddy (sponsor track)
 

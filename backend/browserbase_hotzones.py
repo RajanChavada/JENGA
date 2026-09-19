@@ -133,6 +133,11 @@ def _extract(content: str, source_url: str) -> list[dict]:
         if not match:
             continue
         summary = match.group(1).strip()
+        # Pages embed JSON blobs in script tags that survive the tag-strip; a
+        # station name inside one produces a "summary" of raw keys and braces.
+        # A pin with junk provenance is worse than no pin — skip it.
+        if re.search(r'"\w+"\s*:|[{}\[\]]', summary):
+            continue
         found.append(
             {
                 "id": re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-"),
@@ -166,17 +171,41 @@ async def _try_stagehand() -> dict | None:
     return None
 
 
-async def hotzones() -> dict:
-    if os.getenv("JENGA_OFFLINE") == "1":
-        return _fallback("Offline demo mode: using seeded Toronto construction hotzones.")
+#: The last operator-triggered scrape. Passive reads serve this so a successful
+#: scrape survives page reloads, without any load ever triggering one itself.
+_last_scrape: dict | None = None
+
+
+async def hotzones(force_live: bool = False) -> dict:
+    """The macro heatmap payload.
+
+    Passive reads (`force_live=False`) never scrape: page loads serve the last
+    operator-triggered scrape, or the seed. A scrape happens only when the
+    operator presses the button on the map, which calls this with
+    `force_live=True` — that attempts the real Browserbase run even under
+    `JENGA_OFFLINE=1`, and reports honestly (in `notes`) when it can't,
+    instead of silently serving the seed.
+    """
+    global _last_scrape
+    if not force_live:
+        if _last_scrape is not None:
+            return _last_scrape
+        return _fallback(
+            "Seeded Toronto construction hotzones. Press “Scrape live feeds” to pull "
+            "current municipal and Metrolinx updates via Browserbase."
+        )
 
     key = os.getenv("BROWSERBASE_API_KEY")
     if not key:
-        return _fallback("Set BROWSERBASE_API_KEY to scrape live municipal and Metrolinx updates.")
+        return _fallback(
+            "Scrape requested, but no BROWSERBASE_API_KEY is set — showing the seeded "
+            "Toronto hotzones. Add a key to pull live municipal and Metrolinx updates."
+        )
 
     # Prefer Stagehand (full browser session) when project ID is also available
     stagehand_result = await _try_stagehand()
     if stagehand_result:
+        _last_scrape = stagehand_result
         return stagehand_result
 
     # Fall back to Browserbase Fetch API (lighter, no project ID needed)
@@ -190,11 +219,25 @@ async def hotzones() -> dict:
     if not hot:
         return _fallback("Browserbase Fetch returned no parseable construction sites; using seeded hotzones.")
 
-    # Keep stable ordering and dedupe by id.
+    # Live zones win by id, but seeded zones the scrape didn't cover stay on the
+    # map. A replace here would drop whichever pins today's page text happened
+    # not to mention — including the one site that drills into the product —
+    # which turns a successful scrape into a worse map. Each retained zone keeps
+    # its "offline demo seed" source, so per-pin provenance stays honest.
     deduped = {h["id"]: h for h in hot}
-    return {
+    retained = [
+        {**h, "updated_at": _now()}
+        for h in FALLBACK_HOTZONES
+        if h["id"] not in deduped
+    ]
+    result = {
         "source": "browserbase",
         "generated_at": _now(),
-        "notes": "Fetched with Browserbase Fetch API from Toronto/Metrolinx public construction pages.",
-        "hotzones": list(deduped.values()),
+        "notes": (
+            f"Browserbase Fetch pulled {len(deduped)} zone(s) live from Toronto/Metrolinx "
+            f"pages; {len(retained)} seeded zone(s) retained for coverage."
+        ),
+        "hotzones": list(deduped.values()) + retained,
     }
+    _last_scrape = result
+    return result

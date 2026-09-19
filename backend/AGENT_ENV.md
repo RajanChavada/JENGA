@@ -108,33 +108,44 @@ Overrides the Backboard base URL. Defaults to `https://app.backboard.io/api`.
 
 ## Zip (procurement) — `ZIP_API_KEY`
 
-Live integration with the **Zip Procurement API** (`ziphq.com`).
+Live integration with the **Zip Procurement API**, defaulting to the HTN
+**staging** environment (`https://staging-api.zip.com`).
 
 When a material shortage is detected in a field report, `verify` calls
-`zip_api.expedite_purchase_order()`, which raises an intake request against the
-real API:
+`zip_api.expedite_purchase_order()`. POs on the staging tenant are immutable
+via the API (`Allow: GET, HEAD, OPTIONS`), so the expedite raises a **new** PO
+carrying the local PO number, material and pulled-in date — a real object you
+can open in the tenant's Zip UI. Payloads are `{"data": ...}`-wrapped and
+collections come back as `{"list": [...]}`:
 
 ```
-POST https://api.ziphq.com/requests
+POST https://staging-api.zip.com/purchase_orders
 Zip-Api-Key: <ZIP_API_KEY>
-{"title": "Expedite <PO>", "description": "<reason>",
- "requested_delivery_date": "<date>", "reference_id": "<PO>"}
+{"data": {"currency": "CAD", "vendor_id": "<resolved live>",
+          "description": "EXPEDITE <PO> — <material> — need by <date>. <reason>"}}
 ```
 
-- **Where:** Zip → Company settings → Setup → API → Create API key (grant
-  Request / Approval / Vendor scopes).
+- **Get a key:** ping `#spons-zip-2026` for a domain, then create a standard API
+  key at `{your-domain}/manage/api-key`.
+- **Set it (backend shell, do not commit):**
+  ```
+  export ZIP_API_KEY=<your-key>
+  # base + header default to staging already; override only if needed:
+  # export ZIP_API_URL=https://staging-api.zip.com
+  ```
 - **Absent, fails, or times out:** falls back to the in-memory PO mirror in
   `data/seed_tasks.json["purchase_orders"]` (status → `rescheduled`), so the
   demo always shows the expedite. `GET /api/zip/status` reports `{live: bool}`
-  without ever returning the key.
+  and the resolved base URL without ever returning the key.
 
 ### Optional overrides
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ZIP_API_BASE` | `https://api.ziphq.com` | API host (e.g. sandbox) |
-| `ZIP_REQUESTS_PATH` | `/requests` | intake/expedite endpoint |
-| `ZIP_PO_PATH` | `/purchase_orders` | live PO read endpoint |
+| `ZIP_API_URL` | `https://staging-api.zip.com` | API host (matches ziphq-mcp) |
+| `ZIP_API_BASE` | — | legacy alias for `ZIP_API_URL` |
+| `ZIP_PO_PATH` | `/purchase_orders` | PO collection (expedite = PATCH `.../{id}`) |
+| `ZIP_REQUESTS_PATH` | `/requests` | intake requests (reads) |
 
 > `zip_api.update_purchase_order()` remains a pure in-memory mock, used only by
 > the test suite; the file on disk is never written, so repeated demo runs start

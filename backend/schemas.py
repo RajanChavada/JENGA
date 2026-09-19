@@ -11,7 +11,7 @@ Zone = Literal[
     "track_bed", "south_platform", "north_platform", "mezzanine", "escalator_well"
 ]
 VerdictStatus = Literal["APPROVED", "DISPUTED", "UNDER_REVIEW"]
-POStatus = Literal["confirmed", "rescheduled", "draft", "escalated"]
+POStatus = Literal["confirmed", "rescheduled", "draft", "escalated", "received"]
 
 
 class Task(BaseModel):
@@ -21,13 +21,9 @@ class Task(BaseModel):
     x: float
     y: float
     duration_days: int
-    #: Contractual due day, an offset from the project start. None when the schedule has no dates.
-    due_day: int | None = None
     state: TaskState
     spec_text: str
     depends_on: list[str]
-    #: Unverified predecessors; populated only while the task is derived `blocked`.
-    blocked_by: list[str] = []
     # CPM, computed by the backend
     es: int
     ef: int
@@ -212,7 +208,10 @@ class HotzoneResponse(BaseModel):
 
 
 class VerifyRequest(BaseModel):
-    report_text: str
+    #: None for voice-note submissions, which carry their claim in `transcript`.
+    #: Requiring a string here 422'd every voice verify and silently retired the
+    #: session to fixtures — the exact confident-wrong-answer JENGA argues against.
+    report_text: str | None = None
     image_base64: str | None = None
     transcript: str | None = None
 
@@ -231,100 +230,45 @@ class ScenarioRequest(BaseModel):
     mode: Literal["normal", "cold"]
 
 
+class POActionRequest(BaseModel):
+    """A procurement action a planner takes on a purchase order from the ledger."""
+
+    #: `expedite` pulls delivery in a day (live via Zip when keyed); `receive`
+    #: marks it delivered; `link` ties it to a ticket for attribution.
+    action: Literal["expedite", "receive", "link"]
+    #: Required for `link`; ignored otherwise.
+    task_id: str | None = None
+
+
+class AgentProcurementRequest(BaseModel):
+    """Work packages the user asked the procurement agent to buy for."""
+
+    packages: list[ProposedTask]
+    #: The document the packages were extracted from, quoted in the trace.
+    filename: str | None = None
+
+
+class AgentProcurementResponse(BaseModel):
+    """What the procurement agent did, trace included.
+
+    `live=True` means a real purchase order now exists on Zip staging under
+    `po_id`; False means the one fallback ran and the PO is on the local ledger
+    only. `steps` reuses the verification trace shape so the UI renders both
+    agents with one component vocabulary.
+    """
+
+    ok: bool
+    live: bool
+    po_id: str | None = None
+    po_number: str | None = None
+    vendor: str | None = None
+    detail: str
+    steps: list[VerdictStep] = []
+    purchase_order: PurchaseOrder | None = None
+
+
 class DisputeResponse(BaseModel):
     tasks: list[Task]
     critical_path: list[str]
     attribution: AttributionEntry
     project_slipped_days: int
-
-
-# --- contractor portal ------------------------------------------------------
-
-OwnerDecision = Literal["pending", "approved", "rejected"]
-
-
-class Report(BaseModel):
-    id: str
-    task_id: str
-    project_id: str
-    report_text: str
-    # The AI's recommendation. Withheld (None) from the contractor's view.
-    verdict: dict | None = None
-    owner_decision: OwnerDecision
-    owner_note: str | None = None
-    #: True when the owner approved a report the AI had not approved.
-    ai_override: bool = False
-    #: Predicted cost of a denial, stored when the owner denies. A reduced copy
-    #: (rework days, finish date) in the contractor's view.
-    impact: dict | None = None
-    submitted_at: str | None = None
-    decided_at: str | None = None
-
-
-class DecisionRequest(BaseModel):
-    decision: Literal["approve", "deny"]
-    #: Required to deny, and to approve against the AI's recommendation.
-    note: str | None = None
-
-
-class DecisionResponse(BaseModel):
-    report: Report
-    tasks: list[Task]
-
-
-class PortalParty(BaseModel):
-    id: str
-    name: str
-
-
-class PortalProject(BaseModel):
-    id: str
-    name: str
-    owner: PortalParty
-    contractor: PortalParty
-    start_date: str
-    total: int
-    verified: int
-    active: int
-    under_review: int
-    blocked: int
-    awaiting_review: int
-
-
-class PortalOverview(BaseModel):
-    owners: list[PortalParty]
-    companies: list[PortalParty]
-    projects: list[PortalProject]
-
-
-class AffectedTask(BaseModel):
-    id: str
-    name: str
-    finish_date_before: str
-    finish_date_after: str
-    due_date: str | None = None
-    late_by_days: int
-    newly_late: bool
-
-
-class Impact(BaseModel):
-    task_id: str
-    rework_days: int
-    rationale: list[str]
-    float_consumed: int
-    absorbed_by_float: bool
-    project_slipped_days: int
-    baseline_finish_date: str
-    predicted_finish_date: str
-    project_deadline_date: str
-    days_past_deadline: int
-    critical_path_changed: bool
-    affected: list[AffectedTask]
-
-
-class QueueItem(BaseModel):
-    #: "If you deny": what denying this report would do to the schedule.
-    impact: Impact | None = None
-    report: Report
-    project_name: str
-    task_name: str

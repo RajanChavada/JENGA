@@ -1,7 +1,5 @@
 # JENGA
 
-Using AI for construction project management.
-
 **Autonomous construction timeline verification and delay attribution.**
 
 Blueprints go in. A dependency graph of work packages comes out, pinned to the physical drawing.

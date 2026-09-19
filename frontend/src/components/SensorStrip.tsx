@@ -46,6 +46,7 @@ export function SensorStrip() {
   const tasks = useJenga((s) => s.tasks);
   const sensors = useJenga((s) => s.sensors);
   const loadSensors = useJenga((s) => s.loadSensors);
+  const logActivity = useJenga((s) => s.logActivity);
   const [snapping, setSnapping] = useState(false);
   const [snapFailed, setSnapFailed] = useState(false);
 
@@ -91,6 +92,21 @@ export function SensorStrip() {
       // leaving the presenter watching a sparkline that is never going to fall.
       const applied = await api.setSensorScenario(ticketId, 'cold');
       setSnapFailed(applied === null);
+      logActivity(
+        applied
+          ? {
+              source: 'tiger',
+              status: 'warn',
+              title: `Cold snap on ${ticketId} — curing regime changed`,
+              detail:
+                'Telemetry window reset to the new regime. Once ten readings land below 10 °C, the arbiter\u2019s rule 0 will dispute any "curing fine" claim.',
+            }
+          : {
+              source: 'tiger',
+              status: 'error',
+              title: `Cold snap on ${ticketId} did not apply`,
+            },
+      );
       if (applied) await loadSensors(ticketId);
     } finally {
       setSnapping(false);
@@ -106,7 +122,14 @@ export function SensorStrip() {
         <h3 className="whitespace-nowrap text-[10px] uppercase tracking-wider text-slate-400">
           Curing telemetry · Tiger Data
         </h3>
-        <span className="font-mono text-[10px] text-slate-400">{ticketId}</span>
+        {/* Not decoration: this stream is the arbiter's rule 0. Say so where
+            the sparkline is, not only inside a hover panel. */}
+        <span className="whitespace-nowrap font-mono text-[10px] text-slate-400">
+          {ticketId} <span className="text-slate-300">·</span>{' '}
+          <span title="The verification arbiter reads this average before any approval: a curing claim over a sub-threshold pour is disputed on telemetry alone.">
+            gates the arbiter&apos;s rule 0
+          </span>
+        </span>
       </div>
 
       <div className="flex items-baseline gap-1.5">

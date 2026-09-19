@@ -2,20 +2,16 @@
 
 import { create } from 'zustand';
 import * as api from '@/lib/api';
+import * as fx from '@/lib/fixtures';
 import type {
   AttributionEntry,
   GraphEdge,
   HotzoneResponse,
-  PortalOverview,
-  PortalProject,
   PurchaseOrder,
-  QueueItem,
-  Report,
-  Role,
   SensorPayload,
   Task,
   TaskState,
-  Verdict, 
+  Verdict,
   Zone,
 } from '@/lib/types';
 
@@ -26,18 +22,38 @@ export const CASCADE_STEP_MS = 120;
 export const DEFAULT_PROJECT_ID = 'eglinton-west-station';
 const DEFAULT_SITE_NAME = 'Eglinton West Station';
 
-const IDENTITY_KEY = 'jenga.identity';
-
 export type ViewMode = 'blueprint' | 'logical';
 
 /** Toronto-wide hotzone map, or one site's dependency graph. */
 export type SiteView = 'macro' | 'micro';
+
+/** Within a site: the work surface, or the procurement/ledger surface. */
+export type MicroTab = 'site' | 'procurement';
 
 /** One entry per state transition a task went through. Append-only. */
 export interface StageEvent {
   state: TaskState;
   at: number;
 }
+
+/** Which integration or agent produced an activity entry. Drives the icon. */
+export type AgentSource = 'browserbase' | 'tiger' | 'agent' | 'documents' | 'zip';
+
+/**
+ * One agentic operation, as the activity rail shows it. Entries are created
+ * `running` and resolved in place, so the rail reads as live confirmations of
+ * what the system actually did — not a decorative animation.
+ */
+export interface AgentEvent {
+  id: string;
+  ts: number;
+  source: AgentSource;
+  title: string;
+  detail?: string;
+  status: 'running' | 'ok' | 'warn' | 'error';
+}
+
+let _eventSeq = 0;
 
 /** Where every task sat on the schedule at load. Slip = distance from this. */
 export type Baseline = Record<string, { es: number; ef: number }>;
@@ -62,36 +78,20 @@ function recordStages(
   return next;
 }
 
-function persistIdentity(s: { role: Role; ownerId: string; companyId: string }) {
-  try {
-    localStorage.setItem(
-      IDENTITY_KEY,
-      JSON.stringify({ role: s.role, ownerId: s.ownerId, companyId: s.companyId }),
-    );
-  } catch {
-    /* private window or blocked storage: the switcher still works for the session */
-  }
-}
-
-/**
- * Re-read the active project's tasks and submissions without the loading flash
- * `load` causes. Ignored if the site changed while the request was in flight.
- */
-async function refreshSite(projectId: string) {
-  const { role } = useJenga.getState();
-  const [g, reports] = await Promise.all([
-    api.fetchGraph(projectId),
-    api.fetchReports(projectId, role === 'contractor' ? 'contractor' : 'owner'),
-  ]);
-  if (useJenga.getState().activeProjectId !== projectId) return;
-  useJenga.setState((s) => ({
-    tasks: g.tasks,
-    edges: g.edges,
-    criticalPath: g.critical_path,
-    projectDuration: g.project_duration,
-    reports,
-    stageHistory: recordStages(s.stageHistory, g.tasks),
-  }));
+/** How a landed verdict resolves its pipeline activity entry. */
+function verdictEvent(v: Verdict): Partial<Omit<AgentEvent, 'id' | 'ts'>> {
+  const gz = `${Math.round(v.gptzero.ai_probability * 100)}% AI-authorship`;
+  const vis =
+    v.vision.matches_claim === null
+      ? 'vision cannot establish'
+      : v.vision.matches_claim
+        ? 'vision consistent'
+        : 'vision contradicts';
+  return {
+    status: v.status === 'APPROVED' ? 'ok' : v.status === 'DISPUTED' ? 'error' : 'warn',
+    title: `Verdict on ${v.task_id}: ${v.status.replace('_', ' ')}`,
+    detail: `${gz} · ${vis} · confidence ${v.confidence.toFixed(2)}`,
+  };
 }
 
 interface JengaState {
@@ -103,6 +103,8 @@ interface JengaState {
   /** Display name of that site, straight off the hotzone. Drives the header. */
   activeSiteName: string;
   view: SiteView;
+  /** Which micro surface is on screen: the work graph, or procurement. */
+  microTab: MicroTab;
 
   tasks: Task[];
   edges: GraphEdge[];
@@ -122,22 +124,18 @@ interface JengaState {
   attributions: AttributionEntry[];
   purchaseOrders: PurchaseOrder[];
   hotzones: HotzoneResponse | null;
+  /** True while an operator-triggered Browserbase scrape is running. */
+  scrapingHotzones: boolean;
+  /** Set when the last scrape press could not reach the backend at all. */
+  scrapeError: string | null;
+
+  /** Live log of agentic operations, newest first. Survives site switches. */
+  activity: AgentEvent[];
+  /** Whether the activity rail is open. */
+  activityOpen: boolean;
   sideEffect: string | null;
   /** Curing telemetry, keyed by ticket. Written by the poll in <SensorStrip>. */
   sensors: Record<string, SensorPayload>;
-
-  /**
-   * Who is looking. A demo role switcher, not authentication: the API scopes by
-   * the ids it is given and the UI filters by these. See CONTRACT.md.
-   */
-  role: Role;
-  ownerId: string;
-  companyId: string;
-  portal: PortalOverview | null;
-  /** The active project's submissions. The contractor's copy carries no verdicts. */
-  reports: Report[];
-  /** Updates awaiting the current owner's decision, across their projects. */
-  queue: QueueItem[];
 
   loading: boolean;
   busy: boolean;
@@ -146,25 +144,42 @@ interface JengaState {
 
   load: (projectId?: string) => Promise<void>;
   loadSite: (hotzoneId: string) => Promise<void>;
+  /** Press-to-scrape: run Browserbase now and put the result on the map. */
+  scrapeHotzones: () => Promise<void>;
   loadSample: () => Promise<void>;
   reset: () => Promise<void>;
   setView: (v: SiteView) => void;
+  setMicroTab: (t: MicroTab) => void;
   setMode: (m: ViewMode) => void;
   setStrict: (v: boolean) => void;
   selectTask: (id: string | null) => void;
   selectZone: (z: Zone | null) => void;
   clearVerdict: () => void;
   loadSensors: (id: string) => Promise<void>;
-  restoreIdentity: () => void;
-  setRole: (role: Role) => Promise<void>;
-  setOwner: (id: string) => Promise<void>;
-  setCompany: (id: string) => Promise<void>;
-  refreshPortal: () => Promise<void>;
-  focusProject: (project: PortalProject) => Promise<void>;
-  /** Each returns the refusal message, or null on success. */
-  submitUpdate: (taskId: string, text: string, imageBase64: string | null) => Promise<string | null>;
-  decide: (reportId: string, decision: 'approve' | 'deny', note: string) => Promise<string | null>;
+  submit: (submissionId: string) => Promise<void>;
+  submitText: (taskId: string, text: string, filename: string) => Promise<void>;
   runDispute: (taskId: string, delayDays: number, reason: string) => Promise<void>;
+  /** Procurement actions on a PO. Each hits the backend and mirrors the result. */
+  expeditePO: (poId: string) => Promise<void>;
+  markPoReceived: (poId: string) => Promise<void>;
+  linkPoToTask: (poId: string, taskId: string) => Promise<void>;
+  /**
+   * Hand extracted work packages to the procurement agent, which creates a real
+   * purchase order on Zip staging (or the local-ledger fallback). Logs the run
+   * in the activity rail and mirrors the new PO into the ledger. Returns the
+   * full result so the caller can render the agent's trace, or null if the
+   * request never landed.
+   */
+  agentProcure: (
+    packages: api.ProposedTask[],
+    filename: string,
+  ) => Promise<api.AgentProcurementResult | null>;
+
+  /** Append an activity entry; returns its id so the caller can resolve it. */
+  logActivity: (e: Omit<AgentEvent, 'id' | 'ts'>) => string;
+  /** Resolve or amend an activity entry in place. */
+  updateActivity: (id: string, patch: Partial<Omit<AgentEvent, 'id' | 'ts'>>) => void;
+  setActivityOpen: (open: boolean) => void;
 }
 
 /**
@@ -179,6 +194,7 @@ interface JengaState {
  * site's.
  */
 const EMPTY_SITE = {
+  microTab: 'site' as MicroTab,
   tasks: [],
   edges: [],
   criticalPath: [],
@@ -208,13 +224,11 @@ export const useJenga = create<JengaState>((set, get) => ({
   strict: true,
 
   hotzones: null,
+  scrapingHotzones: false,
+  scrapeError: null,
 
-  role: 'owner',
-  ownerId: 'halton-transit',
-  companyId: 'ellis-civil',
-  portal: null,
-  reports: [],
-  queue: [],
+  activity: [],
+  activityOpen: false,
 
   loading: true,
   offline: false,
@@ -245,6 +259,50 @@ export const useJenga = create<JengaState>((set, get) => ({
       loading: false,
       offline: api.isOffline(),
     });
+  },
+
+  /**
+   * The scrape is a discrete user action with a visible outcome: the button
+   * spins while Browserbase runs, and the result — live zones or the seed with
+   * an honest note about why — replaces the panel when it lands. A null return
+   * (backend down) keeps the old data on screen; nothing is faked.
+   */
+  async scrapeHotzones() {
+    set({ scrapingHotzones: true, scrapeError: null });
+    const ev = get().logActivity({
+      source: 'browserbase',
+      status: 'running',
+      title: 'Scraping municipal construction feeds',
+      detail: 'toronto.ca road restrictions · metrolinx.com Eglinton Crosstown West',
+    });
+    const result = await api.scrapeHotzones();
+    set((s) => ({
+      scrapingHotzones: false,
+      hotzones: result ?? s.hotzones,
+      // A null result means the request never completed — backend down or
+      // timed out — which is a different fact from "ran and fell back to the
+      // seed", and the panel must not report one as the other.
+      scrapeError: result
+        ? null
+        : 'Scrape did not reach the backend — is it running on :8000?',
+      offline: api.isOffline(),
+    }));
+    get().updateActivity(
+      ev,
+      !result
+        ? { status: 'error', title: 'Scrape did not reach the backend' }
+        : result.source === 'browserbase'
+          ? {
+              status: 'ok',
+              title: `Live scrape complete — ${result.hotzones.length} zones`,
+              detail: result.notes,
+            }
+          : {
+              status: 'warn',
+              title: 'Scrape ran, fell back to seeded zones',
+              detail: result.notes,
+            },
+    );
   },
 
   /**
@@ -303,7 +361,25 @@ export const useJenga = create<JengaState>((set, get) => ({
     await get().load();
   },
 
+  logActivity(e) {
+    const id = `EV-${++_eventSeq}`;
+    set((s) => ({
+      // Newest first, capped so a long demo session cannot grow unbounded.
+      activity: [{ ...e, id, ts: Date.now() }, ...s.activity].slice(0, 40),
+    }));
+    return id;
+  },
+
+  updateActivity(id, patch) {
+    set((s) => ({
+      activity: s.activity.map((ev) => (ev.id === id ? { ...ev, ...patch } : ev)),
+    }));
+  },
+
+  setActivityOpen: (activityOpen) => set({ activityOpen }),
+
   setView: (view) => set({ view }),
+  setMicroTab: (microTab) => set({ microTab }),
   setMode: (mode) => set({ mode }),
   setStrict: (strict) => set({ strict }),
   selectTask: (selectedTaskId) => set({ selectedTaskId }),
@@ -324,119 +400,119 @@ export const useJenga = create<JengaState>((set, get) => ({
     set((s) => ({ sensors: { ...s.sensors, [id]: payload } }));
   },
 
-  /** Read the saved identity after hydration; reading it at module init would mismatch the server HTML. */
-  restoreIdentity() {
-    try {
-      const saved = JSON.parse(localStorage.getItem(IDENTITY_KEY) ?? 'null');
-      if (saved && (saved.role === 'owner' || saved.role === 'contractor')) {
-        set({
-          role: saved.role,
-          ownerId: saved.ownerId ?? get().ownerId,
-          companyId: saved.companyId ?? get().companyId,
-        });
-      }
-    } catch {
-      /* private window or blocked storage: the defaults are fine */
-    }
-  },
+  async submit(submissionId) {
+    const sub = fx.SUBMISSIONS.find((s) => s.id === submissionId);
+    if (!sub) return;
+    const site = get().activeProjectId;
+    set({ busy: true, verdict: null, sideEffect: null });
+    const ev = get().logActivity({
+      source: 'agent',
+      status: 'running',
+      title: `Verifying ${sub.task_id} — 5-node pipeline`,
+      detail: 'GPTZero authorship → vision → historical memory → telemetry → arbiter',
+    });
 
-  async setRole(role) {
-    set({ role });
-    persistIdentity(get());
-    await get().refreshPortal();
-  },
-  async setOwner(ownerId) {
-    set({ ownerId });
-    persistIdentity(get());
-    await get().refreshPortal();
-  },
-  async setCompany(companyId) {
-    set({ companyId });
-    persistIdentity(get());
-    await get().refreshPortal();
+    const verdict = await api.verify(sub.task_id, submissionId, get().tasks, get().strict);
+    get().updateActivity(ev, verdictEvent(verdict));
+    // Verification takes seconds; the presenter can be on another site by the
+    // time it answers. That verdict is about the site it was submitted from.
+    // The switch already cleared `busy`, so there is nothing to unwind.
+    if (get().activeProjectId !== site) return;
+    const nextState = fx.stateForVerdict(verdict.status);
+
+    set((s) => {
+      const tasks = s.tasks.map((t) =>
+        t.id === sub.task_id ? { ...t, state: nextState } : t,
+      );
+      return {
+        verdict,
+        busy: false,
+        sideEffect: fx.sideEffectFor(submissionId),
+        selectedTaskId: sub.task_id,
+        offline: api.isOffline(),
+        tasks,
+        stageHistory: recordStages(s.stageHistory, tasks),
+      };
+    });
+
+    // A shortage in the report reschedules its linked PO. Mirrors the backend's
+    // Zip mock so the panel is right whether we are live or on fixtures.
+    const zip = fx.zipActionFor(submissionId);
+    if (zip) {
+      get().logActivity({
+        source: 'zip',
+        status: 'ok',
+        title: `Shortage detected — ${zip.po_id} expedited`,
+        detail: zip.reason,
+      });
+      set((s) => ({
+        purchaseOrders: s.purchaseOrders.map((po) =>
+          po.id === zip.po_id
+            ? {
+                ...po,
+                status: 'rescheduled',
+                delivery_date: zip.new_delivery_date,
+                last_action: zip.reason,
+              }
+            : po,
+        ),
+      }));
+    }
   },
 
   /**
-   * Reload everything the current identity can see, and put the graph on one of
-   * its projects if the one on screen belongs to someone else. A site the portal
-   * does not know (a hotzone with no project) is left alone.
+   * Same verification path as `submit`, but the claim text came from a document
+   * the user uploaded rather than one of the canned submissions. No side-effect
+   * lookup: there is no fixture entry to read procurement fallout from.
    */
-  async refreshPortal() {
-    const { role, ownerId, companyId } = get();
-    const params = role === 'owner' ? { ownerId } : { companyId };
-    const [portal, queue] = await Promise.all([
-      api.fetchPortal(params),
-      role === 'owner' ? api.fetchQueue(ownerId) : Promise.resolve([] as QueueItem[]),
-    ]);
-    if (get().role !== role) return; // the switcher moved again while this was in flight
-    set({ portal, queue, offline: api.isOffline() });
-
-    const active = get().activeProjectId;
-    const mine = portal.projects.some((p) => p.id === active);
-    if (!mine && portal.projects.length > 0 && (role === 'contractor' || active !== null)) {
-      await get().focusProject(portal.projects[0]);
-    } else if (active && mine) {
-      await refreshSite(active);
-    }
-  },
-
-  async focusProject(project) {
-    set({
-      ...EMPTY_SITE,
-      reports: [],
-      view: 'micro',
-      activeProjectId: project.id,
-      activeSiteName: project.name,
-      loading: true,
-    });
-    await get().load(project.id);
-    await refreshSite(project.id);
-  },
-
-  async submitUpdate(taskId, text, imageBase64) {
+  async submitText(taskId, text, filename) {
     const site = get().activeProjectId;
-    if (!site) return 'No project selected.';
-    set({ busy: true });
-    try {
-      await api.submitReport(site, taskId, text, imageBase64, get().tasks, get().strict);
-    } catch (err) {
-      set({ busy: false });
-      return err instanceof Error ? err.message : 'Submission failed.';
-    }
-    set({ busy: false, offline: api.isOffline() });
-    if (get().activeProjectId === site) await refreshSite(site);
-    const { role, ownerId, companyId } = get();
-    set({ portal: await api.fetchPortal(role === 'owner' ? { ownerId } : { companyId }) });
-    return null;
-  },
+    set({ busy: true, verdict: null, sideEffect: null });
+    const ev = get().logActivity({
+      source: 'agent',
+      status: 'running',
+      title: `Verifying ${taskId} from ${filename}`,
+      detail: 'GPTZero authorship → vision → historical memory → telemetry → arbiter',
+    });
 
-  async decide(reportId, decision, note) {
-    let res;
-    try {
-      res = await api.decideReport(reportId, decision, note);
-    } catch (err) {
-      return err instanceof Error ? err.message : 'Decision failed.';
-    }
-    if (get().activeProjectId === res.report.project_id) {
-      set((s) => ({
-        tasks: res.tasks,
-        stageHistory: recordStages(s.stageHistory, res.tasks),
-      }));
-    }
-    const { ownerId } = get();
-    const [queue, portal] = await Promise.all([
-      api.fetchQueue(ownerId),
-      api.fetchPortal({ ownerId }),
-    ]);
-    set({ queue, portal, offline: api.isOffline() });
-    if (get().activeProjectId) await refreshSite(get().activeProjectId!);
-    return null;
+    const verdict = await api.verifyWithText(taskId, text, get().tasks, get().strict);
+    get().updateActivity(ev, verdictEvent(verdict));
+    if (get().activeProjectId !== site) return; // see `submit`
+    const nextState = fx.stateForVerdict(verdict.status);
+
+    set((s) => {
+      const tasks = s.tasks.map((t) =>
+        t.id === taskId ? { ...t, state: nextState } : t,
+      );
+      return {
+        verdict: {
+          ...verdict,
+          evidence: { ...verdict.evidence, claim: `${filename} — ${verdict.evidence.claim}` },
+        },
+        busy: false,
+        selectedTaskId: taskId,
+        offline: api.isOffline(),
+        tasks,
+        stageHistory: recordStages(s.stageHistory, tasks),
+      };
+    });
   },
 
   async runDispute(taskId, delayDays, reason) {
     const site = get().activeProjectId;
     set({ busy: true, cascading: true });
+    const ev = get().logActivity({
+      source: 'agent',
+      status: 'running',
+      title: `Propagating +${delayDays}d slip from ${taskId}`,
+      detail: 'Recomputing CPM float and cascading downstream…',
+    });
     const res = await api.dispute(taskId, delayDays, reason, get().tasks);
+    get().updateActivity(ev, {
+      status: 'ok',
+      title: `Slip recorded — ${res.attribution.downstream_affected.length} downstream tasks moved`,
+      detail: `Project slipped +${res.project_slipped_days}d · attribution written to the ledger.`,
+    });
     if (get().activeProjectId !== site) return; // see `submit`
 
     // The cascade is the demo's money shot: rather than swapping the whole graph
@@ -494,5 +570,101 @@ export const useJenga = create<JengaState>((set, get) => ({
     });
 
     if (ranks.length === 0) set({ busy: false, cascading: false });
+  },
+
+  /**
+   * Procurement actions. Each posts to the backend and writes the returned PO
+   * back into the ledger; a null return (backend down / rejected) leaves the PO
+   * as-is rather than faking success, matching `actOnPurchaseOrder`'s contract.
+   */
+  async expeditePO(poId) {
+    const site = get().activeProjectId;
+    const ev = get().logActivity({
+      source: 'zip',
+      status: 'running',
+      title: `Expediting ${poId} via Zip`,
+    });
+    const updated = await api.actOnPurchaseOrder(poId, 'expedite');
+    get().updateActivity(
+      ev,
+      updated
+        ? {
+            status: 'ok',
+            title: `${poId} expedited → ${updated.delivery_date}`,
+            detail: updated.last_action ?? undefined,
+          }
+        : { status: 'error', title: `Expedite of ${poId} did not land` },
+    );
+    if (!updated || get().activeProjectId !== site) return;
+    set((s) => ({
+      purchaseOrders: s.purchaseOrders.map((po) => (po.id === poId ? updated : po)),
+    }));
+  },
+
+  async markPoReceived(poId) {
+    const site = get().activeProjectId;
+    const updated = await api.actOnPurchaseOrder(poId, 'receive');
+    get().logActivity(
+      updated
+        ? { source: 'zip', status: 'ok', title: `${poId} marked received on site` }
+        : { source: 'zip', status: 'error', title: `Receive of ${poId} did not land` },
+    );
+    if (!updated || get().activeProjectId !== site) return;
+    set((s) => ({
+      purchaseOrders: s.purchaseOrders.map((po) => (po.id === poId ? updated : po)),
+    }));
+  },
+
+  async agentProcure(packages, filename) {
+    const site = get().activeProjectId;
+    const ev = get().logActivity({
+      source: 'zip',
+      status: 'running',
+      title: `Agent creating procurement from ${filename}`,
+      detail: `Planning materials for ${packages.length} work package${packages.length === 1 ? '' : 's'} → vendor → Zip purchase order…`,
+    });
+    const result = await api.createProcurementViaAgent(packages, filename);
+    get().updateActivity(
+      ev,
+      !result
+        ? {
+            status: 'error',
+            title: 'Procurement agent did not reach the backend',
+            detail: 'Is the backend running on :8000?',
+          }
+        : result.live
+          ? {
+              status: 'ok',
+              title: `Zip PO ${result.po_number ?? result.po_id} created on staging`,
+              detail: result.detail,
+            }
+          : {
+              status: 'warn',
+              title: `PO ${result.po_number} drafted on the local ledger`,
+              detail: result.detail,
+            },
+    );
+    if (!result) return null;
+    // Mirror the new PO into the Procurement tab, unless the user has switched
+    // sites while the agent ran — the PO belongs to the site it was raised from.
+    if (result.purchase_order && get().activeProjectId === site) {
+      const po = result.purchase_order;
+      set((s) => ({ purchaseOrders: [po, ...s.purchaseOrders] }));
+    }
+    return result;
+  },
+
+  async linkPoToTask(poId, taskId) {
+    const site = get().activeProjectId;
+    const updated = await api.actOnPurchaseOrder(poId, 'link', taskId);
+    get().logActivity(
+      updated
+        ? { source: 'zip', status: 'ok', title: `${poId} linked to ${taskId}` }
+        : { source: 'zip', status: 'error', title: `Link of ${poId} did not land` },
+    );
+    if (!updated || get().activeProjectId !== site) return;
+    set((s) => ({
+      purchaseOrders: s.purchaseOrders.map((po) => (po.id === poId ? updated : po)),
+    }));
   },
 }));

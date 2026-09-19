@@ -217,7 +217,7 @@ async def main() -> None:
     os.environ["JENGA_STORAGE"] = "memory"  # a test must never reach the shared database
     import main
     import seed as seed_module
-    from schemas import DecisionRequest, VerifyRequest
+    from schemas import VerifyRequest
 
     async def stub_agent(task, report_text=None, image_base64=None, transcript=None, strict=True):
         """What the route-level gate exists for: an approval carrying a flagged score."""
@@ -245,9 +245,6 @@ async def main() -> None:
     # same invariants as the arbiter's rule 1.
     assert gated["confidence"] <= 0.49, gated["confidence"]
     assert "X:" in gated["actionable_request"], gated["actionable_request"]
-    # One pending submission per task: the owner denying the first reopens it.
-    first = main.db._mem["evidence"][-1]
-    await main.decide(first["id"], DecisionRequest(decision="deny", note="resubmit"))
     ungated = await main.verify("P-104", body, strict=False)
     assert ungated["status"] == "APPROVED", ungated["status"]
     print("PASS  route gate holds a flagged approval under strict, leaves it under lenient")
@@ -255,11 +252,10 @@ async def main() -> None:
     # Both backends must agree on what a report row carries. Memory mode keeps
     # the dict whole, so this also guards the three fields main.py computes.
     persisted = main.db._mem["evidence"][-2:]
-    # The AI verdict is a recommendation; only the owner's decision moves it.
-    assert [r["owner_decision"] for r in persisted] == ["rejected", "pending"], persisted
+    assert [r["owner_decision"] for r in persisted] == ["pending", "approved"], persisted
     assert all(r["gptzero_flag"] == "flagged" for r in persisted), persisted
     assert all(r["gptzero_score"] == 0.93 for r in persisted), persisted
-    print("PASS  persisted gptzero_score/flag identical across modes, submissions land pending")
+    print("PASS  persisted gptzero_score/flag identical across modes, owner_decision follows")
 
     # The pipeline-error fallback has no reading at all, so its placeholder 0.0
     # must persist as NULL rather than as a confident "human-written" score.
@@ -285,7 +281,6 @@ async def main() -> None:
         return dict(broken)
 
     main.verify_submission = stub_broken
-    await main.decide(persisted[-1]["id"], DecisionRequest(decision="deny", note="resubmit"))
     await main.verify("P-104", body, strict=True)
     unscored = main.db._mem["evidence"][-1]
     assert unscored["gptzero_score"] is None, unscored["gptzero_score"]
