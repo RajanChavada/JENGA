@@ -1,0 +1,114 @@
+{
+  "_note": "Demo submissions. Each maps to a beat in the 90s script. `expected` is what the agent must produce — use it to assert in tests and as the offline fallback when API keys are absent.",
+
+  "submissions": [
+    {
+      "id": "SUB-01",
+      "beat": 1,
+      "label": "Authentic human report — should pass",
+      "task_id": "P-104",
+      "report_text": "Date: Sept 19, 2026. Sector 4 East Wall. Poured 15 yards of concrete this morning. Weather held up but the pump truck was 30 mins late because of traffic on Eglinton. Curing looks good so far. We are short on form release agent for tomorrow, need about 5 gallons. See attached video for the wall progress. - Dave",
+      "image": "data/images/p104_pour_good.jpg",
+      "transcript": null,
+      "expected": {
+        "status": "APPROVED",
+        "confidence": 0.91,
+        "gptzero": { "ai_probability": 0.04, "flagged": false },
+        "vision": { "observation": "Freshly poured concrete slab visible, consistent surface, forms intact. No visible honeycombing or cold joints.", "matches_claim": true },
+        "reasoning": "Report is human-authored (4% AI probability). Visual evidence is consistent with a completed pour of the stated volume. Curing stage matches the reported timeline.",
+        "actionable_request": null,
+        "side_effect": "Material shortage detected in report text (form release agent, 5 gal). Zip PO-8852 flagged for expedite."
+      }
+    },
+    {
+      "id": "SUB-02",
+      "beat": 3,
+      "label": "AI-generated slop — GPTZero gate must catch it",
+      "task_id": "P-106",
+      "report_text": "Date: September 19, 2026. Daily Progress Update. Today, our dedicated team successfully executed the concrete pouring protocols for the Sector 4 Eastern Boundary Wall. Leveraging synergistic operational workflows, we seamlessly integrated the structural requirements with the dynamic environmental conditions, ensuring a robust and resilient infrastructural milestone. The seamless application of the concrete matrix signifies a pivotal advancement in our overarching project timeline, demonstrating our unwavering commitment to excellence and structural integrity. All key performance indicators for this phase have been optimized.",
+      "image": "data/images/p106_partial.jpg",
+      "transcript": null,
+      "expected": {
+        "status": "UNDER_REVIEW",
+        "confidence": 0.22,
+        "gptzero": { "ai_probability": 0.94, "flagged": true },
+        "vision": { "observation": "Slab appears partially poured — approximately 40% of the south platform area shows finished concrete. Remaining area shows exposed rebar.", "matches_claim": false },
+        "reasoning": "Report flagged as 94% AI-generated and contains no verifiable specifics: no volume, no weather, no crew, no equipment. Visual evidence contradicts the implied completion — roughly 40% poured against a claim of a completed milestone. Auto-approval refused pending human audit.",
+        "actionable_request": "Human project manager to verify south platform pour extent on site. Request itemized pour volume and delivery tickets from subcontractor."
+      }
+    },
+    {
+      "id": "SUB-03",
+      "beat": 5,
+      "label": "AMBIGUOUS EVIDENCE — the Rox money shot. Agent must refuse to decide.",
+      "task_id": "P-107",
+      "report_text": "Sept 19. North platform rebar grid is fully placed and tied, 150 spacing as specified. Ready for inspection.",
+      "image": "data/images/p107_dark_occluded.jpg",
+      "transcript": null,
+      "expected": {
+        "status": "UNDER_REVIEW",
+        "confidence": 0.32,
+        "gptzero": { "ai_probability": 0.11, "flagged": false },
+        "vision": { "observation": "Image contains extreme shadow occlusion across the north perimeter. Rebar is present but tie density and bar spacing cannot be resolved at this exposure.", "matches_claim": null },
+        "reasoning": "Report is human-authored and internally plausible. However the visual evidence is insufficient to verify the claim: drone image contains extreme shadow occlusion in the north perimeter. Rebar tie density cannot be verified to ASTM A615 at 150mm o.c. from this exposure. The agent declines to rule in either direction rather than infer compliance from an unreadable image.",
+        "actionable_request": "Request supplemental illuminated inspection or LiDAR scan at north platform, blueprint coordinates X:340 Y:260. Specify tie density verification at the north perimeter bays."
+      }
+    },
+    {
+      "id": "SUB-04",
+      "beat": 6,
+      "label": "Clean voice verification — approves and turns node green",
+      "task_id": "P-112",
+      "report_text": null,
+      "image": "data/images/p112_forms_off.jpg",
+      "transcript": "Hey, updating ticket 42. Forms are off the east wall, finish is smooth, no honeycombing visible. Ready for the inspectors tomorrow morning.",
+      "expected": {
+        "status": "APPROVED",
+        "confidence": 0.88,
+        "gptzero": { "ai_probability": 0.03, "flagged": false },
+        "vision": { "observation": "Formwork removed, wall face visible. Surface finish is uniform with no visible honeycombing or voids at the exposed face.", "matches_claim": true },
+        "reasoning": "Voice transcript is human and specific. Visual evidence corroborates form removal and the claimed surface quality. Consistent with spec requirement for formed finish.",
+        "actionable_request": null
+      }
+    },
+    {
+      "id": "SUB-05",
+      "beat": 7,
+      "label": "Material shortage in transcript — triggers Zip procurement",
+      "task_id": "P-103",
+      "report_text": null,
+      "image": "data/images/p103_empty_lot.jpg",
+      "transcript": "Site prep is done for the north lot, grading is finished. But hey, I'm looking at the staging area and the aggregate delivery didn't show up. We have maybe one load of gravel left. We need 20 more tons ordered today or we're dead in the water tomorrow.",
+      "expected": {
+        "status": "APPROVED",
+        "confidence": 0.84,
+        "gptzero": { "ai_probability": 0.02, "flagged": false },
+        "vision": { "observation": "Graded lot with finished subgrade surface. Staging area shows a single remaining aggregate pile, well below the volume required for the scheduled placement.", "matches_claim": true },
+        "reasoning": "Grading work verified complete against the claim. However the transcript reports a material shortage that blocks the downstream scheduled task.",
+        "actionable_request": null,
+        "side_effect": "Aggregate shortage detected. Downstream task blocked without resupply. Zip purchase order drafted: 20 tonnes Granular A, vendor CRH Canada, expedited delivery.",
+        "zip_action": {
+          "po_id": "PO-8840",
+          "action": "expedite",
+          "new_delivery_date": "2026-09-20",
+          "reason": "Aggregate stock depleted at staging area; downstream placement blocked without resupply."
+        }
+      }
+    }
+  ],
+
+  "cascade_demo": {
+    "_note": "Beat 6 of the script. P-106 carries only 1 day of float, so a 4-day slip consumes it and flips the critical path onto the platform branch. This is what makes the staggered cascade animation worth watching.",
+    "task_id": "P-106",
+    "delay_days": 4,
+    "reason": "South platform pour disputed — visual evidence shows ~40% complete against a claimed milestone. Rework and re-pour required.",
+    "expected_attribution": {
+      "slip_days": 4,
+      "float_consumed": 1,
+      "attribution": [
+        { "party": "Subcontractor (Platform Concrete Ltd.)", "days": 3, "reason": "Overstated progress; pour extent short of claim" },
+        { "party": "Owner (Metrolinx)", "days": 1, "reason": "Late release of revised platform edge detail SK-114" }
+      ]
+    }
+  }
+}
