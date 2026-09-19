@@ -261,7 +261,7 @@ function VerifyRail() {
   if (!active) return null;
 
   return (
-    <aside className="w-[360px] shrink-0 overflow-auto bg-slate-50 p-3">
+    <aside className="w-90 shrink-0 overflow-auto bg-slate-50 p-3">
       <AgentRunning />
       <VerdictPanel />
     </aside>

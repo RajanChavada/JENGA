@@ -1,13 +1,16 @@
-import type { Metadata } from 'next';
-import './globals.css';
+import type { Metadata } from "next";
+import "./globals.css";
 
 export const metadata: Metadata = {
-  title: 'JENGA — construction timeline verification',
-  description:
-    'Blueprints in, verified work out. Every delay attributed, with evidence, the day it happens.',
+  title: "JENGA",
+  description: "Using AI for Construction Project Tracking",
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
     <html lang="en">
       <body className="h-full antialiased">{children}</body>
