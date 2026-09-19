@@ -34,16 +34,18 @@ export function AgentRunning() {
     <AnimatePresence>
       {show && (
         <motion.div
-          initial={{ opacity: 0, y: 16 }}
+          initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: 8 }}
-          className="absolute bottom-4 left-4 right-4 z-20 rounded-xl border border-slate-200 bg-white/95 p-4 shadow-lg backdrop-blur"
+          className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
         >
           <div className="mb-3 flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-slate-500">
             <Loader2 size={12} className="animate-spin text-slate-500" />
-            Agent verifying · resolving four evidence sources, one arbiter
+            Agent verifying · four evidence sources, one arbiter
           </div>
-          <ol className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
+          {/* One column: the pipeline lives in a narrow right rail now, so the
+              five nodes read top-to-bottom as a sequence rather than a strip. */}
+          <ol className="flex flex-col gap-2">
             {PIPELINE.map((s, i) => (
               <motion.li
                 key={s.node}
@@ -58,7 +60,7 @@ export function AgentRunning() {
                     animate={{ scale: [1, 1.4, 1] }}
                     transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.18, ease: 'easeInOut' }}
                   />
-                  <span className="text-[10px] font-semibold text-slate-700">
+                  <span className="text-[11px] font-semibold text-slate-700">
                     {i + 1} · {s.title}
                   </span>
                 </div>
@@ -107,10 +109,10 @@ export function VerdictPanel() {
     <AnimatePresence>
       {verdict && (
         <motion.div
-          initial={{ opacity: 0, y: 16 }}
+          initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: 16 }}
-          className="absolute bottom-4 left-4 right-4 z-20 max-h-[52%] overflow-auto rounded-xl border border-slate-200 bg-white/95 p-4 shadow-lg backdrop-blur"
+          exit={{ opacity: 0, y: 8 }}
+          className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
         >
           <Header verdict={verdict} onClose={clear} />
 
@@ -276,7 +278,9 @@ function EvidenceStrip({ verdict }: { verdict: Verdict }) {
         <Cpu size={12} />
         Agent resolution · four evidence sources, one arbiter
       </div>
-      <div className="grid grid-cols-1 divide-y divide-slate-200 sm:grid-cols-2 sm:divide-y-0 lg:grid-cols-5 lg:divide-x">
+      {/* Stacked, not a strip: this now lives in a ~360px rail, so five columns
+          would be unreadable. Each source is its own row with the agent's read. */}
+      <div className="grid grid-cols-1 divide-y divide-slate-200">
         {reads.map((r) => (
           <div key={r.title} className="min-w-0 px-3 py-2.5">
             <div className="flex items-center gap-1.5">

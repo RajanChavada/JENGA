@@ -7,6 +7,20 @@ import * as api from '@/lib/api';
 import type { ExtractedTasks, ParsedDoc } from '@/lib/api';
 import { ZONE_LABEL } from '@/lib/theme';
 import type { Zone } from '@/lib/types';
+import { useJenga } from '@/store/useJenga';
+
+/** What the agent does with an upload, shown while it happens. */
+const PIPELINE_STEPS: Record<Mode, { label: string; work: string }[]> = {
+  spec: [
+    { label: 'Parse', work: 'extracting text from the document' },
+    { label: 'Extract', work: 'AI reads work packages & dependencies' },
+    { label: 'Propose', work: 'packages staged for planner review' },
+  ],
+  report: [
+    { label: 'Parse', work: 'extracting the claim text' },
+    { label: 'Stage', work: 'ready to run the 5-node verification' },
+  ],
+};
 
 type Mode = 'report' | 'spec';
 
@@ -26,6 +40,8 @@ export function DocumentUpload({
   initialMode?: Mode;
 }) {
   const [mode, setMode] = useState<Mode>(initialMode);
+  const logActivity = useJenga((s) => s.logActivity);
+  const updateActivity = useJenga((s) => s.updateActivity);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [doc, setDoc] = useState<ParsedDoc | null>(null);
@@ -38,13 +54,59 @@ export function DocumentUpload({
     setError(null);
     setDoc(null);
     setExtracted(null);
+    const ev = logActivity({
+      source: 'documents',
+      status: 'running',
+      title:
+        mode === 'spec'
+          ? `Extracting work packages from ${file.name}`
+          : `Parsing ${file.name} for a claim`,
+      detail:
+        mode === 'spec'
+          ? 'Parse → AI extraction → proposal. The live schedule is not modified.'
+          : 'Parse → stage the claim for the verification pipeline.',
+    });
     try {
       if (mode === 'spec') {
-        setExtracted(await api.extractTasks(file));
+        const ext = await api.extractTasks(file);
+        setExtracted(ext);
+        updateActivity(
+          ev,
+          ext.source === 'rejected'
+            ? {
+                status: 'warn',
+                title: `${file.name} rejected — not a construction document`,
+                detail: ext.notes,
+              }
+            : ext.tasks.length === 0
+              ? {
+                  status: 'warn',
+                  title: `No work packages found in ${file.name}`,
+                  detail: ext.notes,
+                }
+              : {
+                  status: 'ok',
+                  title: `${ext.tasks.length} work packages proposed from ${file.name}`,
+                  detail:
+                    ext.source === 'llm'
+                      ? 'Model-extracted. Staged for planner review — schedule unchanged.'
+                      : 'Offline heuristic extraction. Staged for planner review.',
+                },
+        );
       } else {
-        setDoc(await api.parseDocument(file));
+        const parsed = await api.parseDocument(file);
+        setDoc(parsed);
+        updateActivity(ev, {
+          status: 'ok',
+          title: `${file.name} parsed — claim ready to verify`,
+          detail: `${parsed.char_count.toLocaleString()} characters extracted. Press "Run verification" to hand it to the agent.`,
+        });
       }
     } catch (e) {
+      updateActivity(ev, {
+        status: 'error',
+        title: `Upload of ${file.name} failed`,
+      });
       setError(
         e instanceof Error
           ? `${e.message}. Is the backend running on :8000?`
@@ -112,17 +174,42 @@ export function DocumentUpload({
         ) : (
           <FileUp size={18} className="text-slate-400" />
         )}
-        <p className="text-[11px] text-slate-600">
-          {busy
-            ? mode === 'spec'
-              ? 'Extracting work packages…'
-              : 'Parsing document…'
-            : 'Drop a file or click to browse'}
-        </p>
+        {busy ? (
+          /* The agent's steps, named while they run — the upload is agentic
+             work, and it should look like it. */
+          <ol className="flex items-center gap-2">
+            {PIPELINE_STEPS[mode].map((s, i) => (
+              <motion.li
+                key={s.label}
+                initial={{ opacity: 0.35 }}
+                animate={{ opacity: [0.35, 1, 0.35] }}
+                transition={{
+                  duration: 1.2,
+                  repeat: Infinity,
+                  delay: i * 0.3,
+                  ease: 'easeInOut',
+                }}
+                className="flex items-center gap-1 text-[10px] text-slate-600"
+                title={s.work}
+              >
+                <span className="font-semibold">{i + 1}</span> {s.label}
+                {i < PIPELINE_STEPS[mode].length - 1 && (
+                  <span className="text-slate-300">→</span>
+                )}
+              </motion.li>
+            ))}
+          </ol>
+        ) : (
+          <p className="text-[11px] text-slate-600">Drop a file or click to browse</p>
+        )}
         <p className="text-[10px] text-slate-400">
-          {mode === 'spec'
-            ? 'Proposes work packages and dependencies. Does not modify the live graph.'
-            : 'Extracts the claim text, then runs it through the verification graph.'}
+          {busy
+            ? PIPELINE_STEPS[mode].map((s) => s.work)[
+                mode === 'spec' ? 1 : 0
+              ]
+            : mode === 'spec'
+              ? 'AI proposes work packages and dependencies. Does not modify the live graph.'
+              : 'Extracts the claim text, then runs it through the 5-node verification pipeline.'}
         </p>
         <input
           ref={inputRef}
@@ -180,7 +267,7 @@ export function DocumentUpload({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
             className={`rounded-lg border p-2.5 ${
-              extracted.source === 'rejected'
+              extracted.source === 'rejected' || extracted.tasks.length === 0
                 ? 'border-amber-300 bg-amber-50'
                 : 'border-slate-200 bg-slate-50'
             }`}
@@ -192,6 +279,20 @@ export function DocumentUpload({
                 <div>
                   <p className="text-[11px] font-medium text-amber-800">
                     {extracted.filename} doesn’t look like a construction document
+                  </p>
+                  <p className="mt-1 text-[10px] leading-relaxed text-amber-700">
+                    {extracted.notes}
+                  </p>
+                </div>
+              </div>
+            ) : extracted.tasks.length === 0 ? (
+              // Passed the relevance gate but no line read as a work package.
+              // Honest "found 0" beats a schedule full of CLI fragments.
+              <div className="flex items-start gap-2">
+                <TriangleAlert size={13} className="mt-0.5 shrink-0 text-amber-600" />
+                <div>
+                  <p className="text-[11px] font-medium text-amber-800">
+                    No work packages found in {extracted.filename}
                   </p>
                   <p className="mt-1 text-[10px] leading-relaxed text-amber-700">
                     {extracted.notes}

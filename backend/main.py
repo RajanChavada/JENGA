@@ -3,7 +3,7 @@
 import json
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -25,6 +25,7 @@ from schemas import (
     GraphResponse,
     HotzoneResponse,
     ParsedDocument,
+    POActionRequest,
     PurchaseOrder,
     ScenarioRequest,
     SensorPayload,
@@ -156,6 +157,17 @@ async def get_graph(project_id: str = db.DEFAULT_PROJECT_ID):
 @app.get("/api/hotzones", response_model=HotzoneResponse)
 async def get_hotzones():
     return await browserbase_hotzones.hotzones()
+
+
+@app.post("/api/hotzones/scrape", response_model=HotzoneResponse)
+async def scrape_hotzones():
+    """Operator-triggered Browserbase scrape — the only path that ever scrapes.
+
+    Page loads read the last result (or the seed); this endpoint exists so the
+    scrape is an explicit button press with visible progress, not a side effect.
+    Without a Browserbase key it returns the seed with a note saying so.
+    """
+    return await browserbase_hotzones.hotzones(force_live=True)
 
 
 @app.get("/api/sensors/{ticket_id}", response_model=SensorPayload)
@@ -392,6 +404,54 @@ async def get_attributions():
 @app.get("/api/purchase-orders", response_model=list[PurchaseOrder])
 async def get_purchase_orders():
     return await db.purchase_orders()
+
+
+@app.post("/api/purchase-orders/{po_id}/action", response_model=PurchaseOrder)
+async def act_on_purchase_order(po_id: str, body: POActionRequest):
+    """A planner acts on a PO from the ledger: expedite, receive, or link to a task.
+
+    `expedite` raises a live Zip request when a key is set (and falls back to the
+    local mirror otherwise); `receive` marks it delivered; `link` ties it to a
+    ticket so a later slip can be attributed to the material. Every path writes
+    through `db.update_po`, so the ledger reflects the action whether or not Zip
+    is live.
+    """
+    po = await _po(po_id)
+    if not po:
+        raise HTTPException(404, f"unknown purchase order {po_id}")
+
+    if body.action == "expedite":
+        # One day earlier than the current promise — the same beat verify runs
+        # on a detected shortage, but here triggered explicitly by a planner.
+        try:
+            base = datetime.fromisoformat(str(po["delivery_date"])).date()
+        except (TypeError, ValueError):
+            base = datetime.now(timezone.utc).date()
+        new_date = (base - timedelta(days=1)).isoformat()
+        reason = "Expedited by planner from the procurement ledger."
+        zip_result = await zip_api.expedite_purchase_order(po_id, new_date, reason)
+        note = f"{reason} · via Zip API" if zip_result.get("live") else reason
+        updated = await db.update_po(
+            po_id, status="rescheduled", delivery_date=new_date, last_action=note
+        )
+    elif body.action == "receive":
+        updated = await db.update_po(
+            po_id, status="received", last_action="Marked received on site."
+        )
+    else:  # link
+        if not body.task_id:
+            raise HTTPException(422, "link requires a task_id")
+        if body.task_id not in await _graph():
+            raise HTTPException(404, f"unknown task {body.task_id}")
+        updated = await db.update_po(
+            po_id,
+            linked_task=body.task_id,
+            last_action=f"Linked to {body.task_id}.",
+        )
+
+    if updated is None:
+        raise HTTPException(404, f"unknown purchase order {po_id}")
+    return updated
 
 
 @app.get("/api/zip/status")

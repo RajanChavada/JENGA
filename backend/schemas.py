@@ -11,7 +11,7 @@ Zone = Literal[
     "track_bed", "south_platform", "north_platform", "mezzanine", "escalator_well"
 ]
 VerdictStatus = Literal["APPROVED", "DISPUTED", "UNDER_REVIEW"]
-POStatus = Literal["confirmed", "rescheduled", "draft", "escalated"]
+POStatus = Literal["confirmed", "rescheduled", "draft", "escalated", "received"]
 
 
 class Task(BaseModel):
@@ -208,7 +208,10 @@ class HotzoneResponse(BaseModel):
 
 
 class VerifyRequest(BaseModel):
-    report_text: str
+    #: None for voice-note submissions, which carry their claim in `transcript`.
+    #: Requiring a string here 422'd every voice verify and silently retired the
+    #: session to fixtures — the exact confident-wrong-answer JENGA argues against.
+    report_text: str | None = None
     image_base64: str | None = None
     transcript: str | None = None
 
@@ -225,6 +228,16 @@ class StateRequest(BaseModel):
 class ScenarioRequest(BaseModel):
     #: Anything else is a 422; the simulator has exactly these two regimes.
     mode: Literal["normal", "cold"]
+
+
+class POActionRequest(BaseModel):
+    """A procurement action a planner takes on a purchase order from the ledger."""
+
+    #: `expedite` pulls delivery in a day (live via Zip when keyed); `receive`
+    #: marks it delivered; `link` ties it to a ticket for attribution.
+    action: Literal["expedite", "receive", "link"]
+    #: Required for `link`; ignored otherwise.
+    task_id: str | None = None
 
 
 class DisputeResponse(BaseModel):

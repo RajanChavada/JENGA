@@ -62,8 +62,65 @@ export function fetchPurchaseOrders(): Promise<PurchaseOrder[]> {
   return call('/api/purchase-orders', undefined, fx.purchaseOrders);
 }
 
+/** A planner action on a PO from the ledger: expedite, receive, or link to a task. */
+export type POAction = 'expedite' | 'receive' | 'link';
+
+/**
+ * Act on a purchase order. On any backend failure this returns null rather than
+ * a fixture: procurement is a discrete user action, and a button that silently
+ * "worked" against fixtures while the backend is down is the exact confident-
+ * wrong-answer failure JENGA argues against. The store leaves the PO untouched.
+ */
+export async function actOnPurchaseOrder(
+  poId: string,
+  action: POAction,
+  taskId?: string,
+): Promise<PurchaseOrder | null> {
+  if (offline) return null;
+  try {
+    const res = await fetch(`${BASE}/api/purchase-orders/${poId}/action`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action, task_id: taskId ?? null }),
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return (await res.json()) as PurchaseOrder;
+  } catch (err) {
+    console.warn(`[jenga] PO ${action} on ${poId} did not land.`, err);
+    return null;
+  }
+}
+
 export function fetchHotzones(): Promise<HotzoneResponse> {
   return call('/api/hotzones', undefined, fx.hotzones);
+}
+
+/**
+ * Operator-triggered Browserbase scrape. Returns null on failure rather than a
+ * fixture: the whole point of the button is that the user watches the scrape
+ * actually run, so a fake success would be worse than a visible error. Longer
+ * timeout than `call()` — a real Stagehand session takes tens of seconds.
+ *
+ * Deliberately ignores the global offline latch: a button press is a discrete
+ * user action and the honest answer to "scrape now" while latched is to try —
+ * and a success is the strongest possible evidence the backend is back, so it
+ * clears the latch and lets the rest of the app go live again.
+ */
+export async function scrapeHotzones(): Promise<HotzoneResponse | null> {
+  if (FIXTURES_ONLY) return null; // explicitly pinned to fixtures — never network
+  try {
+    const res = await fetch(`${BASE}/api/hotzones/scrape`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(60000),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    offline = false;
+    return (await res.json()) as HotzoneResponse;
+  } catch (err) {
+    console.warn('[jenga] hotzone scrape did not complete.', err);
+    return null;
+  }
 }
 
 export function verify(

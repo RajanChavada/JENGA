@@ -128,22 +128,73 @@ def _duration_for(text: str) -> int:
     return 5
 
 
+#: A work-package line has to *do* something to construction material. Requiring
+#: an action verb (not just the word "install" anywhere) is what keeps a README's
+#: "install dependencies" or "cd backend" out of the schedule.
+_WORK_VERB = re.compile(
+    r"\b(install|pour|place|form|excavate|erect|cast|strip|backfill|grade|"
+    r"reinforce|shore|verify|inspect|survey|waterproof|weld|tie[- ]in)\w*",
+    re.I,
+)
+
+
+def _is_work_package_line(line: str) -> bool:
+    """True only when a line reads like a construction task, not prose or code.
+
+    Three gates, each catching a different way the old extractor produced junk:
+    it must contain a work verb *and* a construction noun (so "install
+    dependencies" fails), it must be mostly words (so `cd backend && python -m`
+    fails on its punctuation/symbol ratio), and it must not look like a shell or
+    code line (so "bash Terminal 1 backend" fails outright).
+    """
+    if _CODE_LINE.search(line):
+        return False
+    letters = sum(c.isalpha() or c.isspace() for c in line)
+    if not line or letters / len(line) < 0.75:
+        return False
+    return bool(_WORK_VERB.search(line)) and any(
+        term in line.lower() for term in _CONSTRUCTION_TERMS
+    )
+
+
+#: Shell/code tells: a command word at the start, path separators, or operators
+#: that never appear in a written work package.
+_CODE_LINE = re.compile(
+    r"^\s*(cd|ls|cat|npm|pip|python|uv|bash|sh|git|export|sudo|mkdir|curl)\b"
+    r"|[/\\]|&&|\|\||```|::|\$\{|=>|<[a-z]+>|\bTerminal\b",
+    re.I,
+)
+
+
 def _fallback_tasks(filename: str, text: str) -> dict:
-    """Heuristic extraction that handles messy specs without pretending certainty."""
+    """Heuristic extraction that handles messy specs without pretending certainty.
+
+    Strict on purpose: a line becomes a task only if it reads like a work package
+    (see `_is_work_package_line`). If nothing qualifies, we return zero tasks and
+    say so — an honest "found 0" beats a schedule full of `cd backend python`.
+    """
     candidates: list[str] = []
-    for raw in re.split(r"(?:\n\s*){2,}|[.;]\s+", text):
+    for raw in re.split(r"(?:\n\s*){2,}|[.;]\s+|\n", text):
         line = raw.strip(" -\n\t")
         if len(line) < 24:
             continue
-        if re.search(r"install|pour|place|form|excavate|verify|inspect|track|rebar|slab", line, re.I):
+        if _is_work_package_line(line):
             candidates.append(line)
         if len(candidates) >= 6:
             break
 
     if not candidates:
-        candidates = [
-            "Verify submitted specification against the affected station zone and request a clearer work breakdown before scheduling."
-        ]
+        return {
+            "filename": filename,
+            "tasks": [],
+            "source": "offline",
+            "notes": (
+                "No work packages could be read from this document offline. The keyless "
+                "extractor only accepts lines that describe a construction action on a "
+                "known material; nothing here matched. Add an OpenAI or Gemini key for "
+                "full extraction, or upload a clearer spec."
+            ),
+        }
 
     tasks: list[ProposedTask] = []
     for idx, line in enumerate(candidates[:6], start=1):

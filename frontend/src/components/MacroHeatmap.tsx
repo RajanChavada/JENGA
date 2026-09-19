@@ -3,7 +3,8 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import Map, { Marker, Popup, NavigationControl } from 'react-map-gl/maplibre';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { FileUp, MapPinned, RadioTower, RefreshCw } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { FileUp, Globe, MapPinned, RadioTower, RefreshCw } from 'lucide-react';
 import { useJenga } from '@/store/useJenga';
 import type { Hotzone } from '@/lib/types';
 
@@ -79,6 +80,43 @@ function PulsingDot({
 }
 
 /* -------------------------------------------------------------------------- */
+/* Scrape progress                                                            */
+/* -------------------------------------------------------------------------- */
+
+/** Mirrors `SOURCES` in backend/browserbase_hotzones.py — what a press fetches. */
+const SCRAPE_STEPS = [
+  { host: 'toronto.ca', what: 'road restrictions & closure permits' },
+  { host: 'metrolinx.com', what: 'Eglinton Crosstown West updates' },
+  { host: 'extraction', what: 'reading construction zones from the pages' },
+];
+
+/**
+ * What the scrape is doing while it runs: the actual sources Browserbase
+ * fetches, stepping as the request progresses. The steps are real (they mirror
+ * the backend's source list); only the timing is approximated, since one POST
+ * covers the whole run.
+ */
+function ScrapeProgress() {
+  return (
+    <ol className="mb-2 flex flex-col gap-1 rounded-md border border-sky-200 bg-sky-50/60 p-2">
+      {SCRAPE_STEPS.map((s, i) => (
+        <motion.li
+          key={s.host}
+          initial={{ opacity: 0.35 }}
+          animate={{ opacity: [0.35, 1, 0.35] }}
+          transition={{ duration: 1.4, repeat: Infinity, delay: i * 0.45, ease: 'easeInOut' }}
+          className="flex items-center gap-1.5 text-[10px] text-sky-900"
+        >
+          <Globe size={10} className="shrink-0 text-sky-500" />
+          <span className="font-mono">{s.host}</span>
+          <span className="truncate text-sky-700/70">— {s.what}</span>
+        </motion.li>
+      ))}
+    </ol>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
 /* Component                                                                  */
 /* -------------------------------------------------------------------------- */
 
@@ -93,7 +131,12 @@ export function MacroHeatmap({
   onOpenSite: (hotzone: Hotzone) => void;
 }) {
   const hotzones = useJenga((s) => s.hotzones);
+  const scraping = useJenga((s) => s.scrapingHotzones);
+  const scrapeError = useJenga((s) => s.scrapeError);
+  const scrapeHotzones = useJenga((s) => s.scrapeHotzones);
   const [popupId, setPopupId] = useState<string | null>(null);
+  /** Set once the user has pressed scrape, so the panel can confirm the outcome. */
+  const [scrapedOnce, setScrapedOnce] = useState(false);
 
   const sorted = useMemo(
     () =>
@@ -240,17 +283,66 @@ export function MacroHeatmap({
 
       {/* --- Side panel --- */}
       <aside className="flex h-full w-[360px] shrink-0 flex-col overflow-auto border-l border-slate-200 bg-white p-3">
-        <div className="mb-3 flex items-center justify-between">
+        <div className="mb-2 flex items-center justify-between">
           <h2 className="text-[10px] uppercase tracking-wider text-slate-400">
-            scraped hotzones
+            construction hotzones
           </h2>
           <span className="flex items-center gap-1 font-mono text-[9px] text-slate-400">
-            <RefreshCw size={10} />
+            <RefreshCw size={10} className={scraping ? 'animate-spin' : ''} />
             {hotzones
               ? new Date(hotzones.generated_at).toLocaleTimeString()
               : 'loading'}
           </span>
         </div>
+
+        {/* Press-to-scrape: Browserbase runs only on this button, never on page
+            load, so the operator sees the scrape happen and gets a result. */}
+        <button
+          type="button"
+          onClick={() => {
+            setScrapedOnce(true);
+            void scrapeHotzones();
+          }}
+          disabled={scraping}
+          className="mb-2 flex w-full items-center justify-center gap-2 rounded-md bg-slate-900 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-slate-800 disabled:opacity-60"
+        >
+          {scraping ? (
+            <>
+              <RefreshCw size={13} className="animate-spin" />
+              Scraping municipal feeds via Browserbase…
+            </>
+          ) : (
+            <>
+              <RadioTower size={13} />
+              Scrape live feeds
+            </>
+          )}
+        </button>
+
+        {/* While running: the sources Browserbase is actually fetching. */}
+        {scraping && <ScrapeProgress />}
+
+        {/* Outcome confirmation: what the press actually did, in one line.
+            Three honest outcomes: live data landed; the scrape ran but fell
+            back to the seed (note below says why); or it never reached the
+            backend at all — which must not be dressed up as either. */}
+        {scrapedOnce && !scraping && (scrapeError || hotzones) && (
+          <p
+            className={`mb-2 rounded-md border p-2 text-[10px] leading-relaxed ${
+              scrapeError
+                ? 'border-red-200 bg-red-50 text-red-700'
+                : hotzones!.source === 'browserbase'
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                  : 'border-amber-200 bg-amber-50 text-amber-800'
+            }`}
+          >
+            {scrapeError
+              ? scrapeError
+              : hotzones!.source === 'browserbase'
+                ? `Live scrape complete — ${hotzones!.hotzones.length} zones from Browserbase at ${new Date(hotzones!.generated_at).toLocaleTimeString()}.`
+                : 'Scrape ran but returned seeded data — see the note below for why.'}
+          </p>
+        )}
 
         {hotzones?.notes && (
           <p className="mb-3 rounded-lg border border-slate-200 bg-slate-50 p-2 text-[10px] leading-relaxed text-slate-500">

@@ -174,7 +174,7 @@ export interface PurchaseOrder {
   quantity: string;
   vendor: string;
   delivery_date: string;
-  status: 'confirmed' | 'rescheduled' | 'draft' | 'escalated';
+  status: 'confirmed' | 'rescheduled' | 'draft' | 'escalated' | 'received';
   linked_task: string;
   last_action: string | null;
 }

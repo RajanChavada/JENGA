@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { ArrowLeft, ArrowRight } from 'lucide-react';
 import { WorkGraph } from '@/components/WorkGraph';
@@ -8,6 +8,7 @@ import { Timeline } from '@/components/Timeline';
 import { VerdictPanel, AgentRunning } from '@/components/VerdictPanel';
 import { AttributionLedger } from '@/components/AttributionLedger';
 import { SubmitUpdateModal } from '@/components/SubmitUpdateModal';
+import { ActivityRail, ActivityToggle } from '@/components/ActivityRail';
 import { MacroHeatmap } from '@/components/MacroHeatmap';
 import { SensorStrip } from '@/components/SensorStrip';
 import { DocumentUpload } from '@/components/DocumentUpload';
@@ -29,8 +30,9 @@ export default function Home() {
   const setStrict = useJenga((s) => s.setStrict);
   const view = useJenga((s) => s.view);
   const setView = useJenga((s) => s.setView);
+  const microTab = useJenga((s) => s.microTab);
+  const setMicroTab = useJenga((s) => s.setMicroTab);
   const siteName = useJenga((s) => s.activeSiteName);
-  const [show3d, setShow3d] = useState(true);
 
   // Two different questions, and they can disagree: a project that exists but
   // has no tickets yet is onboarded with nothing to draw.
@@ -82,13 +84,26 @@ export default function Home() {
               </button>
             ))}
           </div>
-          <button
-            onClick={() => setShow3d((v) => !v)}
-            disabled={view === 'macro' || !onboarded}
-            className="rounded-md border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-40"
-          >
-            {show3d ? 'Hide 3D' : 'Show 3D'}
-          </button>
+
+          {/* Within a site: the work surface, or procurement + the ledger. */}
+          {view === 'micro' && hasGraph && (
+            <div className="flex overflow-hidden rounded-md border border-slate-200 text-xs">
+              {(['site', 'procurement'] as const).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setMicroTab(t)}
+                  className={`px-2.5 py-1.5 capitalize transition-colors ${
+                    microTab === t
+                      ? 'bg-slate-900 text-white'
+                      : 'bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-900'
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+          )}
+
           <button
             onClick={() => void reset()}
             // There is no graph to put back on a site with no project behind
@@ -119,49 +134,89 @@ export default function Home() {
           {/* No graph, nothing to submit against — and a submission here would
               404 on the backend and retire the session to fixtures. */}
           {hasGraph && <SubmitUpdateModal />}
+          <ActivityToggle />
         </div>
       </header>
 
+      {/* The wrapper is load-bearing: every body panel sizes itself with
+          h-full/w-full, so it needs a flex-1 parent to fill. Without it the
+          map canvas collapses to zero width and only the side panel renders. */}
       <div className="flex min-h-0 flex-1">
         <div className="relative min-w-0 flex-1">
           {loading ? (
-            <div className="flex h-full items-center justify-center text-xs text-slate-400">
+            <div className="flex h-full w-full items-center justify-center text-xs text-slate-400">
               loading graph…
             </div>
           ) : view === 'macro' ? (
             <MacroHeatmap onOpenSite={(hotzone) => void loadSite(hotzone.id)} />
           ) : !hasGraph ? (
             <OnboardSite />
+          ) : microTab === 'procurement' ? (
+            <AttributionLedger />
           ) : (
-            <div className="flex h-full min-h-0 flex-col">
-              <div className="relative min-h-0 flex-[2]">
-                <WorkGraph />
-                <AgentRunning />
-                <VerdictPanel />
-              </div>
-              {/* Under the DAG, above the schedule. Renders nothing until a
-                  non-pending ticket is selected. */}
-              <SensorStrip />
-              <div className="min-h-[210px] flex-1 border-t border-slate-200">
-                <Timeline />
-              </div>
-            </div>
+            <SiteTab />
           )}
         </div>
 
-        {/* Both rails follow the body, not the site. If a project ever comes
-            back with no tickets, `onboarded` and `hasGraph` disagree, and
-            gating these on the site would leave a digital twin and a delay
-            ledger flanking a panel that says the site has no drawings. */}
-        {view === 'micro' && hasGraph && show3d && (
-          <div className="h-full w-[360px] shrink-0 border-l border-slate-200">
-            <StationView />
-          </div>
-        )}
-
-        {view === 'micro' && hasGraph && <AttributionLedger />}
+        {/* The agentic-work confirmation surface, on every view. */}
+        <ActivityRail />
       </div>
     </main>
+  );
+}
+
+/**
+ * The work surface, consolidated.
+ *
+ * Blueprint graph on the left, digital twin directly beside it on the right, the
+ * schedule spanning the full width underneath, and the agent's verdict in a
+ * right rail that only takes space when there is something to say — so the
+ * blueprint is never covered by the panel describing it. This is the layout the
+ * restructure was for: one primary thing per region instead of five panels
+ * fighting over one viewport.
+ */
+function SiteTab() {
+  return (
+    <div className="flex h-full min-h-0 w-full flex-col">
+      {/* Top band: blueprint + twin side by side, verdict/pipeline rail on the right. */}
+      <div className="flex min-h-0 flex-[2]">
+        <div className="min-w-0 flex-1 border-r border-slate-200">
+          <WorkGraph />
+        </div>
+        <div className="hidden min-w-0 flex-1 border-r border-slate-200 lg:block">
+          <StationView />
+        </div>
+        <VerifyRail />
+      </div>
+
+      {/* Renders nothing until a non-pending ticket is selected. */}
+      <SensorStrip />
+
+      {/* Schedule spans the full width along the bottom. */}
+      <div className="min-h-[210px] flex-1 border-t border-slate-200">
+        <Timeline />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The verify rail: the agent pipeline while a submission runs, then the verdict.
+ * Collapses to zero width when idle so the blueprint and twin get the room.
+ */
+function VerifyRail() {
+  const busy = useJenga((s) => s.busy);
+  const cascading = useJenga((s) => s.cascading);
+  const verdict = useJenga((s) => s.verdict);
+  const active = (busy && !cascading) || !!verdict;
+
+  if (!active) return null;
+
+  return (
+    <aside className="w-[360px] shrink-0 overflow-auto bg-slate-50 p-3">
+      <AgentRunning />
+      <VerdictPanel />
+    </aside>
   );
 }
 

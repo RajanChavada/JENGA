@@ -4,10 +4,12 @@
 decides whether a purchase order needs expediting.
 
 `expedite_purchase_order` is the live integration: when `ZIP_API_KEY` is set it
-calls the real Zip Procurement API (base `https://api.ziphq.com`, `Zip-Api-Key`
-header) to raise an intake request that expedites the affected material. Without
-a key — or if the call fails or times out — it degrades to the in-memory mock,
-matching JENGA's one-fallback-per-integration rule so the demo never breaks.
+calls the real Zip Procurement API (staging base `https://staging-api.zip.com`,
+`Zip-Api-Key` header) and PATCHes the affected purchase order to bring its
+delivery date forward — the same `zip_update_purchase_order` operation the
+official `ziphq-mcp` package exposes. Without a key — or if the call fails or
+times out — it degrades to the in-memory mock, matching JENGA's
+one-fallback-per-integration rule so the demo never breaks.
 
 `update_purchase_order` remains a pure in-memory mock used by the test suite.
 """
@@ -25,11 +27,19 @@ from . import SEED, log, safe_call
 PURCHASE_ORDERS: list[dict] = SEED.get("purchase_orders", [])
 
 # --- live Zip Procurement API config ---------------------------------------
-ZIP_BASE = os.getenv("ZIP_API_BASE", "https://api.ziphq.com").rstrip("/")
+# Defaults target the HTN workshop staging environment. `ZIP_API_URL` matches
+# the env var name the official ziphq-mcp package uses; `ZIP_API_BASE` is kept
+# as an alias for older configs.
+ZIP_BASE = (
+    os.getenv("ZIP_API_URL")
+    or os.getenv("ZIP_API_BASE")
+    or "https://staging-api.zip.com"
+).rstrip("/")
 ZIP_KEY = os.getenv("ZIP_API_KEY")
-#: Path used to raise an intake/purchase request. Overridable per-tenant.
-ZIP_REQUESTS_PATH = os.getenv("ZIP_REQUESTS_PATH", "/requests")
+#: Collection path for purchase orders. Expedite = PATCH `{ZIP_PO_PATH}/{id}`.
 ZIP_PO_PATH = os.getenv("ZIP_PO_PATH", "/purchase_orders")
+#: Path for intake requests (used only for reads today).
+ZIP_REQUESTS_PATH = os.getenv("ZIP_REQUESTS_PATH", "/requests")
 
 
 def zip_live() -> bool:
@@ -76,10 +86,12 @@ async def fetch_purchase_orders() -> list[dict] | None:
 
 
 async def expedite_purchase_order(po_id: str, new_delivery_date: str, reason: str) -> dict:
-    """Raise a live Zip intake request to expedite `po_id`, or mock it.
+    """Expedite `po_id` live on Zip by bringing its delivery date forward, or mock it.
 
-    Returns `{ok, live, detail}` — `live` is True only when the real Zip API
-    accepted the request. Never raises.
+    Uses `PATCH {ZIP_PO_PATH}/{po_id}` — the same `zip_update_purchase_order`
+    operation the official ziphq-mcp package exposes — rather than a fabricated
+    intake payload. Returns `{ok, live, detail}`; `live` is True only when the
+    real Zip API accepted the update. Never raises.
     """
     if not ZIP_KEY:
         return {
@@ -90,23 +102,24 @@ async def expedite_purchase_order(po_id: str, new_delivery_date: str, reason: st
 
     async def _go():
         async with httpx.AsyncClient(timeout=5) as client:
+            # PATCH the PO's delivery date. `need_by_date` is Zip's field; we send
+            # a couple of common aliases so a minor schema difference still lands.
             payload = {
-                "title": f"Expedite {po_id}",
-                "description": reason,
-                "requested_delivery_date": new_delivery_date,
-                "reference_id": po_id,
+                "need_by_date": new_delivery_date,
+                "delivery_date": new_delivery_date,
+                "memo": reason,
             }
-            res = await client.post(
-                f"{ZIP_BASE}{ZIP_REQUESTS_PATH}", json=payload, headers=_headers()
+            res = await client.patch(
+                f"{ZIP_BASE}{ZIP_PO_PATH}/{po_id}", json=payload, headers=_headers()
             )
             res.raise_for_status()
             body = res.json() if res.content else {}
-            req_id = body.get("id") or body.get("request_id") or "created"
-            log.warning("zip: LIVE expedite request %s for %s", req_id, po_id)
+            ref = str(body.get("id") or body.get("number") or po_id)
+            log.warning("zip: LIVE expedited PO %s -> %s", ref, new_delivery_date)
             return {
                 "ok": True,
                 "live": True,
-                "detail": f"Zip intake request {req_id} raised to expedite {po_id}.",
+                "detail": f"Zip PO {ref} expedited to {new_delivery_date} via Zip API.",
             }
 
     return await safe_call(
