@@ -71,7 +71,9 @@ def _dsn():
     connect_args = {}
     if sslmode in ("require", "verify-ca", "verify-full"):
         # asyncpg has no sslmode; this context mirrors libpq's sslmode=require,
-        # which encrypts the connection without verifying the chain.
+        # which encrypts the connection without verifying the chain. verify-ca
+        # and verify-full are downgraded to that same no-verification context —
+        # they ask for a check this environment's CA bundle cannot perform.
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -213,11 +215,16 @@ def _task_shape(row):
     return {k: row.get(k) for k in TASK_KEYS}
 
 
+def _branch_id(project_id):
+    """Each project owns its own 'main' branch; ours keeps the literal id."""
+    return DEFAULT_BRANCH_ID if project_id == DEFAULT_PROJECT_ID else f"{project_id}-main"
+
+
 def _ticket_in(row, project_id):
     return {
         "id": row["id"],
         "project_id": project_id,
-        "branch_id": DEFAULT_BRANCH_ID,
+        "branch_id": _branch_id(project_id),
         "title": row.get("name"),
         "zone": row.get("zone"),
         "blueprint_x": row.get("x"),
@@ -336,18 +343,39 @@ async def reset(seed, project_id=DEFAULT_PROJECT_ID):
         for k in _mem:
             _mem[k].clear()
     else:
-        from sqlalchemy import delete
+        from sqlalchemy import delete, or_, select
 
+        T, D, P = _models["tasks"], _models["edges"], _models["purchase_orders"]
         async with _Session() as s:
-            # children before parents; projects/branches are upserted, not wiped
-            for table in ("evidence_verdicts", "reports", "attributions",
-                          "purchase_orders", "edges", "tasks"):
-                await s.execute(delete(_models[table]))
+            # Scoped to this project — the database is shared, so a reset must
+            # not touch anyone else's rows. Children before parents.
+            tix = select(T.id).where(T.project_id == project_id)
+            for table in ("evidence_verdicts", "reports", "attributions"):
+                M = _models[table]
+                await s.execute(delete(M).where(M.ticket_id.in_(tix)))
+            # purchase_orders.ticket_id is nullable, so the ticket subquery alone
+            # would strand our own unlinked rows; dependencies must go if either
+            # end is ours, or the ticket delete below hits their foreign keys.
+            await s.execute(
+                delete(P).where(or_(P.project_id == project_id, P.ticket_id.in_(tix)))
+            )
+            await s.execute(
+                delete(D).where(
+                    or_(D.parent_ticket_id.in_(tix), D.child_ticket_id.in_(tix))
+                )
+            )
+            await s.execute(delete(T).where(T.project_id == project_id))
+
+            # projects/branches are upserted, not wiped
             name = DEFAULT_PROJECT_NAME if project_id == DEFAULT_PROJECT_ID else project_id
             await s.merge(_models["projects"](id=project_id, name=name))
+            # No model declares a real ForeignKey, so the unit of work has no
+            # table-dependency graph: branches only lands after projects if we
+            # say so.
+            await s.flush()
             await s.merge(
                 _models["branches"](
-                    id=DEFAULT_BRANCH_ID, project_id=project_id, name=DEFAULT_BRANCH_NAME
+                    id=_branch_id(project_id), project_id=project_id, name=DEFAULT_BRANCH_NAME
                 )
             )
             await s.commit()
@@ -377,7 +405,7 @@ async def add_edges(rows, project_id=DEFAULT_PROJECT_ID):
             [
                 _models["edges"](
                     id=_uid(),
-                    branch_id=DEFAULT_BRANCH_ID,
+                    branch_id=_branch_id(project_id),
                     parent_ticket_id=r["source"],
                     child_ticket_id=r["target"],
                 )
@@ -417,14 +445,19 @@ async def edges(project_id=DEFAULT_PROJECT_ID):
             if _scoped(e, project_id)
         ]
     from sqlalchemy import select
+    from sqlalchemy.orm import aliased
 
-    D, T = _models["edges"], _models["tasks"]
+    D = _models["edges"]
+    # Both ends must be in the project: an edge to a ticket tasks() never
+    # returned becomes an attribute-less node and blows up the CPM pass.
+    parent, child = aliased(_models["tasks"]), aliased(_models["tasks"])
     async with _Session() as s:
         rows = (
             await s.execute(
                 select(D)
-                .join(T, T.id == D.parent_ticket_id)
-                .where(T.project_id == project_id)
+                .join(parent, parent.id == D.parent_ticket_id)
+                .join(child, child.id == D.child_ticket_id)
+                .where(parent.project_id == project_id, child.project_id == project_id)
                 .order_by(D.parent_ticket_id, D.child_ticket_id)
             )
         ).scalars().all()
@@ -480,14 +513,18 @@ async def add_evidence(row):
         await s.commit()
 
 
-async def attributions():
+async def attributions(project_id=DEFAULT_PROJECT_ID):
     if STORAGE == "memory":
-        return [dict(r) for r in _mem["attributions"]]
+        return [dict(r) for r in _mem["attributions"] if _scoped(r, project_id)]
     from sqlalchemy import select
 
     A = _models["attributions"]
     async with _Session() as s:
-        rows = (await s.execute(select(A).order_by(A.created_at))).scalars().all()
+        rows = (
+            await s.execute(
+                select(A).where(A.project_id == project_id).order_by(A.created_at)
+            )
+        ).scalars().all()
         return [_attribution_out(r) for r in rows]
 
 
@@ -500,14 +537,20 @@ async def add_attribution(row):
         await s.commit()
 
 
-async def purchase_orders():
+async def purchase_orders(project_id=DEFAULT_PROJECT_ID):
     if STORAGE == "memory":
-        return [{k: r.get(k) for k in PO_KEYS} for r in _mem["purchase_orders"]]
+        return [
+            {k: r.get(k) for k in PO_KEYS}
+            for r in _mem["purchase_orders"]
+            if _scoped(r, project_id)
+        ]
     from sqlalchemy import select
 
     P = _models["purchase_orders"]
     async with _Session() as s:
-        rows = (await s.execute(select(P).order_by(P.id))).scalars().all()
+        rows = (
+            await s.execute(select(P).where(P.project_id == project_id).order_by(P.id))
+        ).scalars().all()
         return [_po_out(r) for r in rows]
 
 
