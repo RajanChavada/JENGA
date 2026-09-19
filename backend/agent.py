@@ -9,7 +9,9 @@ Three rules govern the arbiter, in this order:
    report claims the concrete is poured, set or cured, the verdict is DISPUTED. It
    sits ahead of the AI gate deliberately: a thermometer outranks an authorship
    heuristic, so a cold pour reported as cured is disputed on the physical
-   measurement even when the prose is also flagged as generated.
+   measurement even when the prose is also flagged as generated. It needs
+   `tiger.SENSOR_MIN_SAMPLES` readings before it will fire at all — too sparse to
+   judge is its own answer, distinct from both a warm slab and a cold one.
 
 1. GPTZero gate. An AI-authored report (ai_probability over FLAG_THRESHOLD) forces
    UNDER_REVIEW no matter how good the photograph looks. A generated narrative can
@@ -33,7 +35,7 @@ from langgraph.graph import END, START, StateGraph
 from integrations import emit, expected_for, span, transaction
 from integrations.gptzero import FLAG_THRESHOLD, score_text
 from integrations.memory import retrieve_similar
-from integrations.tiger import CURING_MIN_TEMP_C, curing_status
+from integrations.tiger import CURING_MIN_TEMP_C, SENSOR_MIN_SAMPLES, curing_status
 from integrations.vision import CONFIDENCE_THRESHOLD, analyse_image
 from integrations.zip_api import detect_material_shortage  # noqa: F401  (re-exported)
 
@@ -82,9 +84,18 @@ def _threshold_label(sensor: dict) -> str:
 def _sensor_card(sensor: dict) -> tuple[str, str]:
     """(detail, signal) for the site-telemetry trace card."""
     avg = sensor.get("avg_temp_c")
-    if not sensor.get("samples") or avg is None:
+    samples = int(sensor.get("samples") or 0)
+    if not samples or avg is None:
         return "No sensor telemetry for this ticket.", "info"
     window, threshold = _window_label(int(sensor.get("window_s") or 0)), _threshold_label(sensor)
+    floor = int(sensor.get("min_samples") or SENSOR_MIN_SAMPLES)
+    # `info`, deliberately not `ok`: too few readings to judge and a slab that is
+    # curing properly are different facts, and one card cannot claim both.
+    if samples < floor:
+        return (
+            f"Telemetry too sparse to judge: {samples} reading{'' if samples == 1 else 's'} "
+            f"in the last {window}, {floor} needed."
+        ), "info"
     if sensor.get("below_threshold"):
         return (
             f"Curing temp avg {float(avg):.1f} °C over last {window}, "

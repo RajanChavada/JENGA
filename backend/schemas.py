@@ -74,6 +74,9 @@ class SensorStatus(BaseModel):
     samples: int = 0
     below_threshold: bool = False
     threshold_c: float = 10.0
+    #: Readings needed before the average decides anything. `samples` under this
+    #: means "too sparse to judge", which is neither a warm slab nor a cold one.
+    min_samples: int = 10
     #: The window actually measured over, which is what the UI quotes. Shorter
     #: than `window_requested_s` while a new curing regime is still filling up.
     window_s: int = 120

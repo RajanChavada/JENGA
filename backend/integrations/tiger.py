@@ -20,6 +20,14 @@ from integrations import OFFLINE, emit
 TIGER_SERVICE_URL = os.getenv("TIGER_SERVICE_URL")
 CURING_MIN_TEMP_C = 10.0  # ponytail: ACI 306 early-age minimum; real threshold depends on mix design
 
+#: Readings required before the average is allowed to decide anything — roughly
+#: 20 s at the 2 s tick. A verdict resting on five readings over eleven seconds
+#: would not survive the obvious question ("how many readings is that based
+#: on?"), and answering it badly undoes the whole argument that this evidence
+#: source needs a time-series database at all. Ten over twenty seconds is a
+#: defensible floor for a two-minute curing window.
+SENSOR_MIN_SAMPLES = 10
+
 SQL_LIVE = (
     "SELECT time_bucket(make_interval(secs=>$1), time) AS bucket, sensor_type, avg(reading) "
     "FROM sensor_metrics WHERE ticket_id=$2 AND time > now() - make_interval(secs=>$3) "
@@ -193,8 +201,17 @@ async def curing_status(ticket_id: str, window_s: int = 120) -> dict:
         "avg_temp_c": round(avg, 2) if avg is not None else None,
         "min_temp_c": round(min(temps), 2) if temps else None,
         "samples": len(temps),
-        "below_threshold": avg is not None and avg < CURING_MIN_TEMP_C,
+        # Too few readings is not the same fact as a warm slab, and neither is it
+        # a cold one: below the floor this stays False and the arbiter's rule 0
+        # cannot fire. Callers distinguish the two by comparing `samples`
+        # against `min_samples`.
+        "below_threshold": (
+            len(temps) >= SENSOR_MIN_SAMPLES
+            and avg is not None
+            and avg < CURING_MIN_TEMP_C
+        ),
         "threshold_c": CURING_MIN_TEMP_C,
+        "min_samples": SENSOR_MIN_SAMPLES,
         "window_s": effective,
         "window_requested_s": window_s,
         "source": _mode,

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -185,6 +186,34 @@ async def main() -> None:
           f"(below); unclamped {unclamped['window_s']} s -> avg {unclamped['avg_temp_c']} °C (not)")
     print(f"      card:   {telemetry_card({'sensor': clamped})['detail']}")
 
+    # 7 — the sample floor. Five cold readings average well under the threshold
+    # and still must not dispute anything: "too sparse to judge" is its own
+    # answer, and a verdict resting on five readings would not survive a judge
+    # asking how many readings it was based on.
+    await reset_sim()
+    random.seed(10)  # deterministic walk, so the averages below are not a coin flip
+    now = datetime.now(timezone.utc)
+    sensors.set_scenario(TICKET, "cold")
+    tiger._regime_since[TICKET] = now - timedelta(seconds=sensors.TICK_S * 5)
+    await drive(5, now)
+    sparse = await tiger.curing_status(TICKET)
+    assert sparse["samples"] == 5, sparse
+    assert sparse["min_samples"] == tiger.SENSOR_MIN_SAMPLES == 10, sparse
+    # The average really is below the threshold — the floor is what is gating,
+    # not a warm reading.
+    assert sparse["avg_temp_c"] < sparse["threshold_c"], sparse
+    assert sparse["below_threshold"] is False, sparse
+    thin = telemetry_card({"sensor": sparse})
+    assert thin["signal"] == "info", thin
+    assert "too sparse" in thin["detail"], thin
+    held = await _decide({**BASE_STATE, "sensor": sparse})
+    assert held["branch"] != "sensor_conflict", held["branch"]
+    assert held["verdict"]["status"] == without["verdict"]["status"], held["verdict"]["status"]
+    print(f"PASS  {sparse['samples']} cold readings avg {sparse['avg_temp_c']} °C -> "
+          f"below_threshold {sparse['below_threshold']} (floor {sparse['min_samples']}), "
+          f"verdict {held['verdict']['status']} via {held['branch']}")
+    print(f"      card:   {thin['detail']}")
+
     # Re-posting a mode is not a regime change and must not restart the window.
     await reset_sim()
     sensors.set_scenario(TICKET, "cold")
@@ -195,7 +224,7 @@ async def main() -> None:
     assert tiger.effective_window("P-999", 120) == 120
 
     print("=" * 62)
-    print("All checks passed (6 cases).")
+    print("All checks passed (7 cases).")
 
 
 if __name__ == "__main__":
