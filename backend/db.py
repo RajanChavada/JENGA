@@ -131,7 +131,7 @@ def _define_models():
         submitted_by_role: Mapped[str] = mapped_column(String)
         report_text: Mapped[str] = mapped_column(Text)
         media_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-        # written by the owner-decision flow, not by add_evidence
+        # add_evidence writes the three below; decided_at is nobody's job yet
         gptzero_score: Mapped[float | None] = mapped_column(Float, nullable=True)
         gptzero_flag: Mapped[str | None] = mapped_column(String, nullable=True)
         owner_decision: Mapped[str | None] = mapped_column(String, nullable=True)

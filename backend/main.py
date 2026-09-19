@@ -196,16 +196,26 @@ async def verify(task_id: str, body: VerifyRequest, strict: bool = True):
     # the advisory is already in the reasoning.
     gz = verdict.get("gptzero") or {}
     score = gz.get("ai_probability")
+    # `scored: False` is the pipeline-error fallback saying its 0.0 is a
+    # placeholder. A canned offline score is a real reading and is kept.
+    scored = gz.get("scored", True) and isinstance(score, (int, float))
     flagged = bool(gz.get("flagged")) or (
         isinstance(score, (int, float)) and score > FLAG_THRESHOLD
     )
     if strict and flagged:
         verdict["status"] = "UNDER_REVIEW"
         gz["flagged"] = True
-        verdict.setdefault(
-            "actionable_request",
-            "Report flagged as AI-generated. Re-submit a first-hand account of the work performed.",
+        # A hold this gate creates owes the same two invariants the arbiter's
+        # rule 1 keeps: never decision-grade confidence, and always somewhere
+        # to go. setdefault would not have done it — the key is usually
+        # present and None.
+        verdict["confidence"] = min(verdict.get("confidence") or 0.0, 0.49)
+        request = verdict.get("actionable_request") or (
+            "Report flagged as AI-generated. Re-submit a first-hand account of the work performed."
         )
+        if "X:" not in request:
+            request = f"{request.rstrip()} Blueprint coordinates X:{task['x']} Y:{task['y']}."
+        verdict["actionable_request"] = request
 
     await db.add_evidence(
         {
@@ -215,9 +225,9 @@ async def verify(task_id: str, body: VerifyRequest, strict: bool = True):
             "transcript": body.transcript,
             "verdict": verdict,
             # What GPTZero said, recorded identically in both modes; only the
-            # decision below follows the verdict. No score at all is NULL, not
-            # 0.0 — a missing reading and a confident-human one differ.
-            "gptzero_score": score if isinstance(score, (int, float)) else None,
+            # decision below follows the verdict. No reading at all is NULL, not
+            # 0.0 — a missing score and a confident-human one differ.
+            "gptzero_score": score if scored else None,
             "gptzero_flag": "flagged" if flagged else "clear",
             "owner_decision": {"APPROVED": "approved", "DISPUTED": "disputed"}.get(
                 verdict["status"], "pending"

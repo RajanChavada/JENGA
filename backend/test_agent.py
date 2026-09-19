@@ -16,8 +16,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import agent  # noqa: E402
 from agent import _decide, detect_material_shortage, verify_submission  # noqa: E402
 from integrations import DATA_DIR, OFFLINE  # noqa: E402
+from integrations.gptzero import FLAG_THRESHOLD  # noqa: E402
 from integrations.zip_api import PURCHASE_ORDERS, update_purchase_order  # noqa: E402
 
 EVIDENCE = json.loads((DATA_DIR / "mock_evidence.json").read_text())
@@ -79,7 +81,7 @@ async def main() -> None:
             assert verdict["actionable_request"] is None, f"{sub['id']}: non-hold carries a request"
 
         # An AI-authored report must never auto-approve.
-        if verdict["gptzero"]["ai_probability"] > 0.85:
+        if verdict["gptzero"]["ai_probability"] > FLAG_THRESHOLD:
             assert verdict["status"] == "UNDER_REVIEW", f"{sub['id']}: AI report escaped the gate"
 
         if expected.get("confidence") is not None:
@@ -158,26 +160,34 @@ async def main() -> None:
     # Lenient approval: a flagged report with a legible photo. Assembled by hand
     # since no fixture combines the two. P-104 also carries canned wording, so
     # this doubles as proof the override cannot swallow the advisory.
-    approved = (
-        await _decide(
-            {
-                "task": TASKS["P-104"],
-                "gptzero": {"ai_probability": 0.93, "flagged": True},
-                "vision": {
-                    "observation": "Conduit runs are visible and follow the routing in the spec.",
-                    "matches_claim": True,
-                    "confidence": 0.9,
-                    "insufficient": False,
-                },
-                "historical": {"summary": "Two comparable packages closed on schedule."},
-                "strict": False,
-            }
-        )
-    )["verdict"]
+    flagged_but_legible = {
+        "task": TASKS["P-104"],
+        "gptzero": {"ai_probability": 0.93, "flagged": True},
+        "vision": {
+            "observation": "Conduit runs are visible and follow the routing in the spec.",
+            "matches_claim": True,
+            "confidence": 0.9,
+            "insufficient": False,
+        },
+        "historical": {"summary": "Two comparable packages closed on schedule."},
+    }
+
+    lenient = await _decide({**flagged_but_legible, "strict": False})
+    approved = lenient["verdict"]
     assert approved["status"] == "APPROVED", approved["status"]
     assert "GPTZero advisory: 93% AI" in approved["reasoning"], approved["reasoning"]
     assert approved["actionable_request"] is None, approved["actionable_request"]
     print("PASS  flagged report + legible photo, lenient -> APPROVED carrying the advisory")
+
+    # The same input under strict, to pin that each rule names itself. A rule
+    # added ahead of the AI gate reports its own name rather than inheriting
+    # one inferred from the verdict.
+    held = await _decide({**flagged_but_legible, "strict": True})
+    assert held["verdict"]["status"] == "UNDER_REVIEW", held["verdict"]["status"]
+    assert (held["branch"], lenient["branch"]) == ("ai_gate", "approved"), (
+        held["branch"], lenient["branch"],
+    )
+    print(f"PASS  arbiter branch names itself: strict={held['branch']} lenient={lenient['branch']}")
 
     # --- The route-level gate ------------------------------------------------
     # main.verify re-applies the AI gate after the agent returns, as a backstop
@@ -212,6 +222,10 @@ async def main() -> None:
 
     gated = await main.verify("P-104", body, strict=True)
     assert gated["status"] == "UNDER_REVIEW", gated["status"]
+    # A hold is a hold whichever gate produced it: the route-level one owes the
+    # same invariants as the arbiter's rule 1.
+    assert gated["confidence"] <= 0.49, gated["confidence"]
+    assert "X:" in gated["actionable_request"], gated["actionable_request"]
     ungated = await main.verify("P-104", body, strict=False)
     assert ungated["status"] == "APPROVED", ungated["status"]
     print("PASS  route gate holds a flagged approval under strict, leaves it under lenient")
@@ -223,6 +237,36 @@ async def main() -> None:
     assert all(r["gptzero_flag"] == "flagged" for r in persisted), persisted
     assert all(r["gptzero_score"] == 0.93 for r in persisted), persisted
     print("PASS  persisted gptzero_score/flag identical across modes, owner_decision follows")
+
+    # The pipeline-error fallback has no reading at all, so its placeholder 0.0
+    # must persist as NULL rather than as a confident "human-written" score.
+    # Breaking the graph is the only way to reach that fallback honestly.
+    class BrokenGraph:
+        async def ainvoke(self, _state):
+            raise RuntimeError("graph unavailable")
+
+    real_graph, agent.GRAPH = agent.GRAPH, BrokenGraph()
+    try:
+        broken = await verify_submission(
+            task=TASKS["P-104"],
+            report_text="Poured the slab today.",
+            image_base64=None,
+            transcript=None,
+        )
+    finally:
+        agent.GRAPH = real_graph
+    assert broken["status"] == "UNDER_REVIEW", broken["status"]
+    assert broken["gptzero"]["scored"] is False, broken["gptzero"]
+
+    async def stub_broken(task, report_text=None, image_base64=None, transcript=None, strict=True):
+        return dict(broken)
+
+    main.verify_submission = stub_broken
+    await main.verify("P-104", body, strict=True)
+    unscored = main.db._mem["evidence"][-1]
+    assert unscored["gptzero_score"] is None, unscored["gptzero_score"]
+    assert unscored["gptzero_flag"] == "clear", unscored["gptzero_flag"]
+    print("PASS  pipeline-error fallback persists a NULL score, not a confident 0.0")
 
     print("=" * 62)
     if failures:

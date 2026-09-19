@@ -4,10 +4,10 @@ A four-node LangGraph: gptzero_gate -> vision_analysis -> historical_memory -> a
 
 Two rules govern the arbiter, in this order:
 
-1. GPTZero gate. An AI-authored report (ai_probability > 0.85) forces UNDER_REVIEW
-   no matter how good the photograph looks. A generated narrative can describe work
-   nobody performed. Under `strict=False` the gate is advisory instead: the score is
-   appended to the reasoning and the remaining rules decide the status.
+1. GPTZero gate. An AI-authored report (ai_probability over FLAG_THRESHOLD) forces
+   UNDER_REVIEW no matter how good the photograph looks. A generated narrative can
+   describe work nobody performed. Under `strict=False` the gate is advisory instead:
+   the score is appended to the reasoning and the remaining rules decide the status.
 
 2. The ambiguity rule. If the image cannot actually be read — dark, occluded, blurry,
    badly framed — the verdict is UNDER_REVIEW at confidence < 0.5 with an actionable
@@ -36,6 +36,8 @@ class VerifyState(TypedDict, total=False):
     claim: str
     #: False demotes the AI gate from a hard override to an advisory line.
     strict: bool
+    #: Which arbiter rule produced the verdict. Named by the rule itself.
+    branch: str
     gptzero: dict
     vision: dict
     historical: dict
@@ -113,15 +115,9 @@ async def arbiter(state: VerifyState) -> dict:
     with span("arbiter", task_id=task_id) as s:
         result = await _decide(state)
         verdict = result["verdict"]
-        # Which rule fired is recoverable from the verdict itself: only the AI
-        # gate produces a hold with `flagged` set — and only in strict mode,
-        # where the gate can still override.
-        if verdict["status"] == "UNDER_REVIEW":
-            branch = "ai_gate" if strict and verdict["gptzero"]["flagged"] else "ambiguity_rule"
-        elif verdict["status"] == "DISPUTED":
-            branch = "contradiction"
-        else:
-            branch = "approved"
+        # Each rule names itself, so a rule added later is reported as itself
+        # rather than being inferred from the verdict and mislabelled.
+        branch = result["branch"]
         s.set_data("branch", branch)
         s.set_data("strict", strict)
         s.set_data("status", verdict["status"])
@@ -165,7 +161,7 @@ async def _decide(state: VerifyState) -> dict:
     # can lift it. In lenient mode it does not fire at all and evaluation falls
     # through to the rules below.
     if ai_flagged and strict:
-        status = "UNDER_REVIEW"
+        status, branch = "UNDER_REVIEW", "ai_gate"
         confidence = min(vis_conf, 0.49)
         reasoning = (
             f"The written report scores {ai_prob:.0%} on GPTZero's AI-authorship check, above the "
@@ -183,7 +179,7 @@ async def _decide(state: VerifyState) -> dict:
 
     # Rule 2 — the ambiguity rule. Never infer compliance from an unreadable image.
     elif vision.get("insufficient") or matches is None or vis_conf < CONFIDENCE_THRESHOLD:
-        status = "UNDER_REVIEW"
+        status, branch = "UNDER_REVIEW", "ambiguity_rule"
         confidence = min(vis_conf, 0.49)
         reasoning = (
             f"The photographic evidence does not establish the claim. {observation} "
@@ -201,7 +197,7 @@ async def _decide(state: VerifyState) -> dict:
         )
 
     elif matches is False:
-        status = "DISPUTED"
+        status, branch = "DISPUTED", "contradiction"
         confidence = round(vis_conf, 2)
         reasoning = (
             f"The photograph contradicts the submitted claim. {observation} The specification for "
@@ -213,7 +209,7 @@ async def _decide(state: VerifyState) -> dict:
         request = None
 
     else:
-        status = "APPROVED"
+        status, branch = "APPROVED", "approved"
         confidence = round(vis_conf, 2)
         # Lenient mode can reach an approval on a flagged report, so this clause
         # must not claim the score came in under the gate when it did not.
@@ -259,6 +255,7 @@ async def _decide(state: VerifyState) -> dict:
         request = None
 
     return {
+        "branch": branch,
         "verdict": {
             "task_id": task_id,
             "status": status,
@@ -294,7 +291,9 @@ def _build_trace(state: VerifyState) -> list[dict]:
     verdict = state.get("verdict") or {}
 
     ai_prob = float(gz.get("ai_probability", 0.0))
-    ai_flagged = bool(gz.get("flagged"))
+    # Same test as _decide's: a fixture can carry flagged=false above the
+    # threshold, and a green card over a hold would be a lie.
+    ai_flagged = bool(gz.get("flagged")) or ai_prob > FLAG_THRESHOLD
     strict = bool(state.get("strict", True))
     matches = vision.get("matches_claim")
     vis_conf = float(vision.get("confidence", 0.0))
@@ -424,7 +423,10 @@ async def verify_submission(
                     "signal": "warn",
                 }
             ],
-            "gptzero": {"ai_probability": 0.0, "flagged": False},
+            # `scored: False` marks the 0.0 as a placeholder, not a reading —
+            # GPTZero never ran here. schemas.GPTZero ignores the extra key, so
+            # only the raw dict (which is what gets persisted) can see it.
+            "gptzero": {"ai_probability": 0.0, "flagged": False, "scored": False},
             "vision": {"observation": "Vision analysis unavailable.", "matches_claim": None, "confidence": 0.0},
             "evidence": {
                 "spec": task.get("spec_text", ""),
