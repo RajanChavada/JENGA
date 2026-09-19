@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { X } from 'lucide-react';
 import { displayId, formatDate } from '@/lib/format';
@@ -13,74 +13,108 @@ const AI_CHIP: Record<VerdictStatus, string> = {
   DISPUTED: 'border-red-300 bg-red-50 text-red-700',
 };
 
-/** Header button plus the drawer of contractor updates awaiting this owner's call. */
-export function ApprovalQueue() {
+/** Header toggle for the Reviews rail; the count is the updates awaiting this owner. */
+export function ReviewsButton() {
   const queue = useJenga((s) => s.queue);
-  const [open, setOpen] = useState(false);
+  const open = useJenga((s) => s.reviewsOpen);
+  const setOpen = useJenga((s) => s.setReviewsOpen);
 
   return (
-    <>
-      <button
-        onClick={() => setOpen(true)}
-        className="flex items-center gap-1.5 rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-slate-800"
+    <button
+      onClick={() => setOpen(!open)}
+      aria-pressed={open}
+      className="flex items-center gap-1.5 rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-slate-800"
+    >
+      Reviews
+      <span
+        className={`rounded-full px-1.5 font-mono text-[10px] ${
+          queue.length ? 'bg-amber-400 text-slate-900' : 'bg-slate-700 text-slate-300'
+        }`}
       >
-        Reviews
-        <span
-          className={`rounded-full px-1.5 font-mono text-[10px] ${
-            queue.length ? 'bg-amber-400 text-slate-900' : 'bg-slate-700 text-slate-300'
-          }`}
-        >
-          {queue.length}
-        </span>
-      </button>
+        {queue.length}
+      </span>
+    </button>
+  );
+}
 
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-slate-900/30 backdrop-blur-[2px]"
-            onClick={() => setOpen(false)}
-          >
-            <motion.aside
-              initial={{ x: 24 }}
-              animate={{ x: 0 }}
-              onClick={(e) => e.stopPropagation()}
-              className="ml-auto flex h-full w-full max-w-lg flex-col border-l border-slate-200 bg-white shadow-xl"
+/**
+ * The updates awaiting this owner's call, docked as a right rail beside the
+ * Activity rail. It pushes the page over instead of floating above it, so the
+ * schedule (where a card's predicted extension is drawn) is never covered.
+ * Hovering a card previews its prediction on the schedule.
+ */
+export function ReviewsRail() {
+  const queue = useJenga((s) => s.queue);
+  const open = useJenga((s) => s.reviewsOpen);
+  const setOpen = useJenga((s) => s.setReviewsOpen);
+  const setPreview = useJenga((s) => s.setPreviewReport);
+
+  // A hover left dangling by the rail closing would keep a prediction on screen.
+  useEffect(() => () => setPreview(null), [setPreview]);
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.aside
+          initial={{ x: 40, opacity: 0 }}
+          animate={{ x: 0, opacity: 1 }}
+          exit={{ x: 40, opacity: 0 }}
+          transition={{ duration: 0.18, ease: 'easeOut' }}
+          className="flex h-full w-[420px] shrink-0 flex-col border-l border-slate-200 bg-white"
+        >
+          <div className="flex shrink-0 items-start justify-between border-b border-slate-200 px-4 py-3">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-900">Updates awaiting review</h2>
+              <p className="text-[11px] text-slate-500">
+                The AI verdict is a recommendation. Hover a card to preview its impact on the
+                schedule; your decision moves the task.
+              </p>
+            </div>
+            <button
+              onClick={() => setOpen(false)}
+              aria-label="Close reviews"
+              className="text-slate-400 hover:text-slate-700"
             >
-              <div className="flex items-start justify-between border-b border-slate-200 px-4 py-3">
-                <div>
-                  <h2 className="text-sm font-semibold text-slate-900">Updates awaiting review</h2>
-                  <p className="text-[11px] text-slate-500">
-                    The AI verdict is a recommendation. Your decision moves the task.
-                  </p>
-                </div>
-                <button onClick={() => setOpen(false)} className="text-slate-400 hover:text-slate-700">
-                  <X size={16} />
-                </button>
-              </div>
-              <div className="flex-1 space-y-3 overflow-auto p-4">
-                {queue.length === 0 && (
-                  <p className="pt-8 text-center text-xs text-slate-400">
-                    Nothing to review. New contractor updates appear here.
-                  </p>
-                )}
-                {queue.map((item) => (
-                  <ReviewCard key={item.report.id} item={item} />
-                ))}
-              </div>
-            </motion.aside>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </>
+              <X size={16} />
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 space-y-3 overflow-auto p-4">
+            {queue.length === 0 && (
+              <p className="pt-8 text-center text-xs text-slate-400">
+                Nothing to review. New contractor updates appear here.
+              </p>
+            )}
+            {queue.map((item) => (
+              <ReviewCard key={item.report.id} item={item} />
+            ))}
+          </div>
+        </motion.aside>
+      )}
+    </AnimatePresence>
   );
 }
 
 function ReviewCard({ item }: { item: QueueItem }) {
   const decide = useJenga((s) => s.decide);
+  const setPreview = useJenga((s) => s.setPreviewReport);
+  const isTarget = useJenga((s) => s.reviewTargetId === item.report.id);
+  const ref = useRef<HTMLDivElement>(null);
   const { report } = item;
+
+  // A card that goes away under the pointer (decided, or its rail closed) never
+  // sees `mouseleave`, so clear its hover here or the preview would stay stuck on it.
+  useEffect(
+    () => () => {
+      const state = useJenga.getState();
+      if (state.previewReportId === item.report.id) state.setPreviewReport(null);
+    },
+    [item.report.id],
+  );
+
+  // Opened from a schedule badge: bring this card into view.
+  useEffect(() => {
+    if (isTarget) ref.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [isTarget]);
   const verdict = report.verdict;
   const [note, setNote] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -104,7 +138,14 @@ function ReviewCard({ item }: { item: QueueItem }) {
   }
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-3">
+    <div
+      ref={ref}
+      onMouseEnter={() => setPreview(report.id)}
+      onMouseLeave={() => setPreview(null)}
+      className={`rounded-lg border bg-white p-3 transition-shadow ${
+        isTarget ? 'border-slate-400 ring-2 ring-slate-900/15' : 'border-slate-200'
+      }`}
+    >
       <div className="flex items-baseline justify-between gap-2">
         <span className="text-xs font-medium text-slate-900">{item.task_name}</span>
         <span className="font-mono text-[10px] text-slate-400">{displayId(report.task_id)}</span>

@@ -3,8 +3,9 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { AlertTriangle, ShieldAlert } from 'lucide-react';
-import { STATE_STYLE } from '@/lib/theme';
-import { displayId } from '@/lib/format';
+import { STATE_STYLE, isDenied } from '@/lib/theme';
+import { displayId, formatDate } from '@/lib/format';
+import { axisSpan, extensionsByTask, whatIfFor, type Extension } from '@/lib/whatif';
 import { useJenga, type StageEvent } from '@/store/useJenga';
 import type { ScheduleAnalytics, SpendAnalytics, SpendEvent, Task } from '@/lib/types';
 
@@ -28,6 +29,11 @@ export function Timeline() {
   const selectedTaskId = useJenga((s) => s.selectedTaskId);
   const selectTask = useJenga((s) => s.selectTask);
   const focusOrigin = useJenga((s) => s.focusOrigin);
+  const queue = useJenga((s) => s.queue);
+  const reports = useJenga((s) => s.reports);
+  const previewReportId = useJenga((s) => s.previewReportId);
+  const activeProjectId = useJenga((s) => s.activeProjectId);
+  const openReview = useJenga((s) => s.openReview);
   const listRef = useRef<HTMLDivElement>(null);
 
   // A task chosen in the graph or the twin can be off-screen here once the
@@ -81,11 +87,29 @@ export function Timeline() {
    * the store only republishes it after the last cascade rank lands, so mid-
    * cascade a moved task's ef would otherwise run off the right edge.
    */
-  const span = useMemo(() => {
+  const baseSpan = useMemo(() => {
     let max = Math.max(projectDuration, baselineDuration ?? 0, 1);
     for (const t of tasks) max = Math.max(max, t.ef, t.lf);
     return max;
   }, [tasks, projectDuration, baselineDuration]);
+
+  // What the owner is looking at, and what is still outstanding from earlier
+  // denials. The axis stretches only while a prediction is on screen; the bars'
+  // spring animation slides everything to the new scale and back.
+  const { primary, faint } = useMemo(
+    () => whatIfFor({ selectedTaskId, previewReportId, queue, reports, tasks, activeProjectId }),
+    [selectedTaskId, previewReportId, queue, reports, tasks, activeProjectId],
+  );
+  const extensions = useMemo(() => extensionsByTask(primary, faint), [primary, faint]);
+  const span = axisSpan(baseSpan, primary);
+  // Updates awaiting this owner on the site on screen, by task.
+  const pendingByTask = useMemo(
+    () =>
+      new Map(
+        queue.filter((q) => q.report.project_id === activeProjectId).map((q) => [q.report.task_id, q.report.id]),
+      ),
+    [queue, activeProjectId],
+  );
 
   const rows = useMemo(
     () =>
@@ -128,6 +152,34 @@ export function Timeline() {
             propagating…
           </span>
         )}
+
+        {pendingByTask.size > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              const [taskId, reportId] = [...pendingByTask][0];
+              openReview(reportId, taskId);
+            }}
+            className="rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 font-mono text-[10px] text-amber-800 hover:bg-amber-100"
+          >
+            {pendingByTask.size} awaiting review
+          </button>
+        )}
+
+        {primary && (
+          <span
+            className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${
+              primary.impact.days_past_deadline > 0
+                ? 'border-red-300 bg-red-50 text-red-700'
+                : 'border-slate-300 bg-slate-50 text-slate-600'
+            }`}
+          >
+            {primary.impact.project_slipped_days > 0
+              ? `+${primary.impact.project_slipped_days}d ${primary.kind === 'pending' ? 'if denied' : 'from denial'} → ${formatDate(primary.impact.predicted_finish_date)}`
+              : `absorbed by float (${primary.kind === 'pending' ? 'if denied' : 'denied'})`}
+            {primary.impact.days_past_deadline > 0 && ` · ${primary.impact.days_past_deadline}d past deadline`}
+          </span>
+        )}
       </header>
 
       {rows.length === 0 ? (
@@ -140,7 +192,7 @@ export function Timeline() {
           {/* Day axis. Kept out of the scroll body so it stays put vertically; the
               track is percentage-based so it never drifts out of column. */}
           <div className="relative shrink-0 border-b border-slate-200 pb-1 pt-1.5">
-            <div className="relative h-3.5" style={{ marginLeft: LABEL_W }}>
+            <div className={`relative ${primary ? 'h-6' : 'h-3.5'}`} style={{ marginLeft: LABEL_W }}>
               {gridDays.map((d) => (
                 <span
                   key={d}
@@ -158,6 +210,16 @@ export function Timeline() {
               >
                 finish
               </span>
+              {primary && (
+                <span
+                  className={`absolute top-2.5 -translate-x-full whitespace-nowrap pr-1 font-mono text-[9px] ${
+                    primary.impact.days_past_deadline > 0 ? 'text-red-600' : 'text-slate-500'
+                  }`}
+                  style={{ left: `${pct(Math.max(primary.impact.predicted_finish_day ?? 0, primary.impact.deadline_day ?? 0))}%` }}
+                >
+                  predicted {primary.impact.predicted_finish_day}d · deadline {primary.impact.deadline_day}d
+                </span>
+              )}
             </div>
           </div>
 
@@ -193,6 +255,26 @@ export function Timeline() {
                   </>
                 )}
 
+                {primary && (
+                  <>
+                    <div
+                      className="absolute inset-y-0 bg-red-500/10"
+                      style={{
+                        left: `${pct(primary.impact.baseline_finish_day ?? projectDuration)}%`,
+                        width: `${pct(Math.max(0, (primary.impact.predicted_finish_day ?? 0) - (primary.impact.baseline_finish_day ?? projectDuration)))}%`,
+                      }}
+                    />
+                    <div
+                      className="absolute inset-y-0 w-px border-l border-dashed border-red-600"
+                      style={{ left: `${pct(primary.impact.predicted_finish_day ?? 0)}%` }}
+                    />
+                    <div
+                      className="absolute inset-y-0 w-px bg-slate-800/70"
+                      style={{ left: `${pct(primary.impact.deadline_day ?? 0)}%` }}
+                    />
+                  </>
+                )}
+
                 <motion.div
                   initial={false}
                   animate={{ left: `${pct(projectDuration)}%` }}
@@ -214,6 +296,11 @@ export function Timeline() {
                   selected={t.id === selectedTaskId}
                   onSelect={() => selectTask(t.id === selectedTaskId ? null : t.id, 'schedule')}
                   pct={pct}
+                  ext={extensions.get(t.id)}
+                  denied={isDenied(t, reports)}
+                  onReview={
+                    pendingByTask.has(t.id) ? () => openReview(pendingByTask.get(t.id)!, t.id) : undefined
+                  }
                 />
               ))}
             </div>
@@ -230,6 +317,13 @@ export function Timeline() {
             </Swatch>
             <Swatch className="bg-slate-300">baseline (moved only)</Swatch>
             <Swatch className="bg-red-500">critical · zero float</Swatch>
+            <Swatch className="bg-red-400/60 [background-image:repeating-linear-gradient(45deg,#dc2626aa_0_3px,transparent_3px_6px)]">
+              predicted if denied
+            </Swatch>
+            <span className="flex items-center gap-1">
+              <span className="rounded border border-amber-300 bg-amber-100 px-1 text-[8px] text-amber-800">Review</span>
+              update awaiting you
+            </span>
             <span>ticks = stage transitions (wall clock)</span>
             <span className="flex items-center gap-1">
               <span className="h-1.5 w-1.5 rotate-45 bg-sky-500" /> PO created
@@ -265,6 +359,9 @@ function Row({
   selected,
   onSelect,
   pct,
+  ext,
+  denied,
+  onReview,
 }: {
   task: Task;
   base: { es: number; ef: number } | undefined;
@@ -274,6 +371,12 @@ function Row({
   selected: boolean;
   onSelect: () => void;
   pct: (day: number) => number;
+  /** A predicted schedule extension for this task, if one is on screen. */
+  ext?: Extension;
+  /** Denied and waiting on a resubmission. */
+  denied?: boolean;
+  /** Present when an update on this task is awaiting the owner; opens its review. */
+  onReview?: () => void;
 }) {
   const style = STATE_STYLE[t.state];
   const moved = !!base && (base.es !== t.es || base.ef !== t.ef);
@@ -309,12 +412,43 @@ function Row({
       >
         <span className="shrink-0 font-mono text-[10px] text-slate-400">{displayId(t.id)}</span>
         <span className="truncate text-[10px] text-slate-700">{t.name}</span>
+        {onReview && (
+          // A span, not a button: this whole row is already a button.
+          <span
+            role="button"
+            tabIndex={0}
+            title="Open this update in Reviews"
+            onClick={(e) => {
+              e.stopPropagation();
+              onReview();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                e.stopPropagation();
+                onReview();
+              }
+            }}
+            className="shrink-0 rounded border border-amber-300 bg-amber-100 px-1 text-[8px] font-medium text-amber-800 hover:bg-amber-200"
+          >
+            Review
+          </span>
+        )}
+        {denied && !onReview && (
+          <span className="shrink-0 rounded border border-red-300 bg-red-100 px-1 text-[8px] font-medium text-red-700">
+            Denied
+          </span>
+        )}
         <span
           className={`ml-auto shrink-0 font-mono text-[9px] ${
-            t.is_critical ? 'text-red-600' : 'text-slate-400'
+            ext?.live && ext.lateBy > 0
+              ? 'font-medium text-red-600'
+              : t.is_critical
+                ? 'text-red-600'
+                : 'text-slate-400'
           }`}
         >
-          {t.is_critical ? 'CRIT' : `${t.total_float}d`}
+          {ext?.live && ext.lateBy > 0 ? `+${ext.lateBy}d late` : t.is_critical ? 'CRIT' : `${t.total_float}d`}
         </span>
       </div>
 
@@ -346,6 +480,32 @@ function Row({
               top: GHOST_TOP,
               height: GHOST_H,
             }}
+          />
+        )}
+
+        {/* The predicted extension: from where this task finishes now to where it would
+            finish. Full strength for the prediction being looked at, faint for a past
+            denial that is still outstanding. */}
+        {ext && (
+          <motion.div
+            initial={false}
+            animate={{ left: `${pct(ext.from)}%`, width: `${pct(ext.to - ext.from)}%` }}
+            transition={SPRING}
+            data-ext={ext.live ? 'live' : 'faint'}
+            className="absolute rounded-r-sm border border-l-0 border-dashed border-red-600"
+            style={{
+              top: BAR_TOP,
+              height: BAR_H,
+              opacity: ext.live ? 1 : 0.4,
+              backgroundImage: 'repeating-linear-gradient(45deg, #dc2626aa 0 3px, transparent 3px 6px)',
+            }}
+          />
+        )}
+        {/* Where it was due, on tasks the prediction pushes (or keeps) past it. */}
+        {ext?.live && ext.dueDay != null && (
+          <div
+            className="absolute w-px bg-slate-800/70"
+            style={{ left: `${pct(ext.dueDay)}%`, top: 2, height: ROW_H - 4 }}
           />
         )}
 

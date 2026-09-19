@@ -7,7 +7,7 @@ import { WorkGraph } from "@/components/WorkGraph";
 import { Timeline } from "@/components/Timeline";
 import { VerdictPanel, AgentRunning } from "@/components/VerdictPanel";
 import { AttributionLedger } from "@/components/AttributionLedger";
-import { ApprovalQueue } from "@/components/ApprovalQueue";
+import { ReviewsButton, ReviewsRail } from "@/components/ApprovalQueue";
 import { ContractorPortal } from "@/components/ContractorPortal";
 import { RoleSwitcher } from "@/components/RoleSwitcher";
 import { Splitter, useFraction } from "@/components/Splitter";
@@ -133,7 +133,7 @@ export default function Home() {
                 Reset
               </button>
               {/* Contractors submit from their own portal; the owner reviews here. */}
-              <ApprovalQueue />
+              <ReviewsButton />
             </>
           )}
           <ActivityToggle />
@@ -162,7 +162,8 @@ export default function Home() {
           )}
         </div>
 
-        {/* The agentic-work confirmation surface, on every view. */}
+        {/* Docked rails, side by side: review decisions, and the agentic-work feed. */}
+        {isOwner && <ReviewsRail />}
         <ActivityRail />
       </div>
     </main>

@@ -445,6 +445,10 @@ class AffectedTask(BaseModel):
     name: str
     finish_date_before: str
     finish_date_after: str
+    #: Day offsets on the schedule's axis. Absent on impacts stored before they existed.
+    finish_day_before: int | None = None
+    finish_day_after: int | None = None
+    due_day: int | None = None
     due_date: str | None = None
     late_by_days: int
     newly_late: bool
@@ -457,6 +461,9 @@ class Impact(BaseModel):
     float_consumed: int
     absorbed_by_float: bool
     project_slipped_days: int
+    baseline_finish_day: int | None = None
+    predicted_finish_day: int | None = None
+    deadline_day: int | None = None
     baseline_finish_date: str
     predicted_finish_date: str
     project_deadline_date: str

@@ -194,6 +194,10 @@ interface JengaState {
   reports: Report[];
   /** Updates awaiting the current owner's decision, across their projects. */
   queue: QueueItem[];
+  /** The docked Reviews rail, the card it was opened on, and the card the pointer is over. */
+  reviewsOpen: boolean;
+  reviewTargetId: string | null;
+  previewReportId: string | null;
 
   loading: boolean;
   busy: boolean;
@@ -216,6 +220,10 @@ interface JengaState {
   selectTask: (id: string | null, origin?: FocusOrigin) => void;
   selectZone: (z: Zone | null, origin?: FocusOrigin) => void;
   clearFocus: () => void;
+  setReviewsOpen: (open: boolean) => void;
+  setPreviewReport: (reportId: string | null) => void;
+  /** Open the rail on a review and focus its task in every view. */
+  openReview: (reportId: string, taskId: string) => void;
   clearVerdict: () => void;
   loadSensors: (id: string) => Promise<void>;
   restoreIdentity: () => void;
@@ -316,6 +324,9 @@ export const useJenga = create<JengaState>((set, get) => ({
   portal: null,
   reports: [],
   queue: [],
+  reviewsOpen: false,
+  reviewTargetId: null,
+  previewReportId: null,
 
   loading: true,
   offline: false,
@@ -577,6 +588,15 @@ export const useJenga = create<JengaState>((set, get) => ({
         : { selectedTaskId: null, selectedZone: null, focusOrigin: null },
     ),
   clearFocus: () => set({ selectedTaskId: null, selectedZone: null, focusOrigin: null }),
+  setReviewsOpen: (reviewsOpen) =>
+    set(reviewsOpen ? { reviewsOpen } : { reviewsOpen, reviewTargetId: null, previewReportId: null }),
+  setPreviewReport: (previewReportId) => set({ previewReportId }),
+  // Clicking a review badge is a selection like any other, so the graph, the twin
+  // and the schedule all focus the task; hovering a card only previews (see the rail).
+  openReview: (reportId, taskId) => {
+    set({ reviewsOpen: true, reviewTargetId: reportId });
+    get().selectTask(taskId, 'schedule');
+  },
   clearVerdict: () => set({ verdict: null, sideEffect: null }),
 
   /**
