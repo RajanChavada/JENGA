@@ -148,7 +148,13 @@ function buildNode(
   selected: boolean,
   measured: Node["measured"]
 ): Node {
-  const normalWidth = width - delayWidth;
+  const normalPercent = width > 0 ? ((width - delayWidth) / width) * 100 : 100;
+  const statusColor = STATUS_COLOR[t.STATUS];
+  const background =
+    delayWidth > 0
+      ? `linear-gradient(to right, ${statusColor} ${normalPercent}%, #dc2626 ${normalPercent}%)`
+      : statusColor;
+
   return {
     id: t.ID,
     position: { x, y },
@@ -164,25 +170,11 @@ function buildNode(
           <span className="whitespace-nowrap text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
             {t.TITLE}
           </span>
-          <div className="flex" style={{ width, height: BAR_HEIGHT }}>
-            <div
-              className="rounded-l"
-              style={{
-                width: normalWidth,
-                height: BAR_HEIGHT,
-                background: STATUS_COLOR[t.STATUS],
-                borderTopRightRadius: delayWidth > 0 ? 0 : undefined,
-                borderBottomRightRadius: delayWidth > 0 ? 0 : undefined,
-              }}
-            />
-            {delayWidth > 0 && (
-              <div
-                className="rounded-r"
-                title="Delayed beyond the originally planned end date"
-                style={{ width: delayWidth, height: BAR_HEIGHT, background: "#dc2626" }}
-              />
-            )}
-          </div>
+          <div
+            className="rounded"
+            title={delayWidth > 0 ? "Delayed beyond the originally planned end date" : undefined}
+            style={{ width, height: BAR_HEIGHT, background, borderWidth: 1, borderColor: "white" }}
+          />
         </div>
       ),
     },
