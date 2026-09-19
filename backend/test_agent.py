@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -177,6 +178,51 @@ async def main() -> None:
     assert "GPTZero advisory: 93% AI" in approved["reasoning"], approved["reasoning"]
     assert approved["actionable_request"] is None, approved["actionable_request"]
     print("PASS  flagged report + legible photo, lenient -> APPROVED carrying the advisory")
+
+    # --- The route-level gate ------------------------------------------------
+    # main.verify re-applies the AI gate after the agent returns, as a backstop
+    # for the canned-verdict path, which never runs the arbiter. It has to
+    # honour `strict` as well: left unconditional it forces UNDER_REVIEW back
+    # onto every lenient approval and makes the toggle cosmetic. Driven
+    # in-process against a stub agent — no server and no network involved.
+    os.environ["JENGA_STORAGE"] = "memory"  # a test must never reach the shared database
+    import main
+    import seed as seed_module
+    from schemas import VerifyRequest
+
+    async def stub_agent(task, report_text=None, image_base64=None, transcript=None, strict=True):
+        """What the route-level gate exists for: an approval carrying a flagged score."""
+        return {
+            "task_id": task["id"],
+            "status": "APPROVED",
+            "confidence": 0.9,
+            "reasoning": (
+                "Stub verdict standing in for the arbiter so the route-level gate can be "
+                "exercised on its own, with the authorship score above the threshold."
+            ),
+            "actionable_request": None,
+            "gptzero": {"ai_probability": 0.93, "flagged": True},
+            "vision": {"observation": "Stub observation.", "matches_claim": True, "confidence": 0.9},
+        }
+
+    main.verify_submission = stub_agent
+    await main.db.init()
+    await seed_module.seed()
+    body = VerifyRequest(report_text="Poured the slab today, everything went fine.")
+
+    gated = await main.verify("P-104", body, strict=True)
+    assert gated["status"] == "UNDER_REVIEW", gated["status"]
+    ungated = await main.verify("P-104", body, strict=False)
+    assert ungated["status"] == "APPROVED", ungated["status"]
+    print("PASS  route gate holds a flagged approval under strict, leaves it under lenient")
+
+    # Both backends must agree on what a report row carries. Memory mode keeps
+    # the dict whole, so this also guards the three fields main.py computes.
+    persisted = main.db._mem["evidence"][-2:]
+    assert [r["owner_decision"] for r in persisted] == ["pending", "approved"], persisted
+    assert all(r["gptzero_flag"] == "flagged" for r in persisted), persisted
+    assert all(r["gptzero_score"] == 0.93 for r in persisted), persisted
+    print("PASS  persisted gptzero_score/flag identical across modes, owner_decision follows")
 
     print("=" * 62)
     if failures:

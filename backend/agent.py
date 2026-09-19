@@ -215,11 +215,19 @@ async def _decide(state: VerifyState) -> dict:
     else:
         status = "APPROVED"
         confidence = round(vis_conf, 2)
+        # Lenient mode can reach an approval on a flagged report, so this clause
+        # must not claim the score came in under the gate when it did not.
+        authorship = (
+            f"the report is flagged at {ai_prob:.0%} AI-authorship, over the "
+            f"{FLAG_THRESHOLD:.0%} gate but advisory only in this mode"
+            if ai_flagged
+            else f"the report reads as a first-hand account ({ai_prob:.0%} AI-authorship "
+            f"probability, well under the {FLAG_THRESHOLD:.0%} gate)"
+        )
         reasoning = (
             f"The photographic evidence supports the claim. {observation} The submitted image is "
             f"legible enough to rule on, returning {vis_conf:.2f} confidence against the "
-            f"{CONFIDENCE_THRESHOLD:.2f} floor, and the report reads as a first-hand account "
-            f"({ai_prob:.0%} AI-authorship probability, well under the {FLAG_THRESHOLD:.0%} gate). "
+            f"{CONFIDENCE_THRESHOLD:.2f} floor, and {authorship}. "
             f"The work matches the specification for {where} at {coords}. {hist_summary} "
             f"Approved without escalation."
         )
