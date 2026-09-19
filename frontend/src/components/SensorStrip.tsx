@@ -10,7 +10,7 @@ import { useJenga } from '@/store/useJenga';
 const POLL_MS = 2000;
 const SPARK_W = 120;
 const SPARK_H = 32;
-/** Keeps the stroke and the end marker off the top and bottom edges. */
+/** Keeps the stroke and the end marker clear of all four edges. */
 const SPARK_PAD = 3;
 
 /**
@@ -47,6 +47,7 @@ export function SensorStrip() {
   const sensors = useJenga((s) => s.sensors);
   const loadSensors = useJenga((s) => s.loadSensors);
   const [snapping, setSnapping] = useState(false);
+  const [snapFailed, setSnapFailed] = useState(false);
 
   const task = tasks.find((t) => t.id === selectedTaskId);
   // A pending ticket has no pour to instrument, and nothing is selected on load.
@@ -59,6 +60,8 @@ export function SensorStrip() {
    */
   useEffect(() => {
     if (!ticketId) return;
+    // A failed snap belongs to the ticket it was aimed at, not to the strip.
+    setSnapFailed(false);
     void loadSensors(ticketId);
     const handle = setInterval(() => void loadSensors(ticketId), POLL_MS);
     return () => clearInterval(handle);
@@ -82,9 +85,13 @@ export function SensorStrip() {
   async function coldSnap() {
     if (!ticketId) return;
     setSnapping(true);
+    setSnapFailed(false);
     try {
-      await api.setSensorScenario(ticketId, 'cold');
-      await loadSensors(ticketId);
+      // null means the regime did not change. Say so on the button rather than
+      // leaving the presenter watching a sparkline that is never going to fall.
+      const applied = await api.setSensorScenario(ticketId, 'cold');
+      setSnapFailed(applied === null);
+      if (applied) await loadSensors(ticketId);
     } finally {
       setSnapping(false);
     }
@@ -126,10 +133,16 @@ export function SensorStrip() {
         Sample count sits next to the average on purpose: the floor, not the
         temperature, is what gates a dispute for the first ~20 s after a snap,
         and a card that only showed the average would look stuck.
+
+        Sparse reads neutral here, the same as it does in both verdict panels.
+        It was amber, which made one fact three colours across three surfaces.
+        The state is carried by the wording and by the dimmed average instead —
+        "too few readings to judge" is a statement about the evidence, not a
+        warning about the pour, and amber says the opposite.
       */}
       <p
         className={`min-w-0 flex-1 truncate text-[10px] ${
-          below ? 'text-red-600' : sparse ? 'text-amber-600' : 'text-slate-500'
+          below ? 'text-red-600' : 'text-slate-500'
         }`}
         title={card.detail}
       >
@@ -147,27 +160,51 @@ export function SensorStrip() {
         type="button"
         onClick={() => void coldSnap()}
         disabled={snapping}
-        title="Drop this pour into a cold snap and watch the average fall"
-        className="flex shrink-0 items-center gap-1.5 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs text-sky-800 transition-colors hover:bg-sky-100 disabled:opacity-50"
+        title={
+          snapFailed
+            ? 'The sensor service did not accept the scenario change. The pour is still curing normally.'
+            : 'Drop this pour into a cold snap and watch the average fall'
+        }
+        className={`flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs transition-colors disabled:opacity-50 ${
+          snapFailed
+            ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
+            : 'border-sky-200 bg-sky-50 text-sky-800 hover:bg-sky-100'
+        }`}
       >
         <Snowflake size={12} />
-        {snapping ? 'Snapping…' : 'Cold snap'}
+        {snapping ? 'Snapping…' : snapFailed ? 'Snap failed — retry' : 'Cold snap'}
       </button>
     </section>
   );
 }
 
 /**
- * `tiger` or `mock`, with the two queries behind it one hover away. The badge
- * is small but it is the whole answer to "where's the time-series?", so the
- * tooltip is a readable SQL block rather than a title attribute.
+ * `tiger` or `mock`, with the two queries behind it. The badge is small but it
+ * is the whole answer to "where's the time-series?", so the SQL is a readable
+ * block rather than a title attribute.
+ *
+ * It is a **disclosure button**, not a decorative badge with a tooltip. The
+ * earlier version was a `<button>` that did nothing on click and existed only
+ * to be focusable, which announces to assistive tech as an action that isn't
+ * there. Clicking now genuinely opens and closes the panel and `aria-expanded`
+ * says which, so the keyboard and screen-reader paths tell the truth. Hover
+ * still reveals it for the mouse, and the panel is inside the `group` and
+ * accepts pointer events, so the cursor can travel from the badge into the SQL
+ * to select and copy it — which is what the person who leans in to read it
+ * closely is trying to do.
  */
 function SourceBadge({ source }: { source?: 'tiger' | 'mock' }) {
   const live = source === 'tiger';
+  const [open, setOpen] = useState(false);
+  const panelId = 'sensor-sql-panel';
   return (
     <span className="group relative shrink-0">
       <button
         type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-controls={panelId}
+        aria-label={`Telemetry source: ${source ?? 'not yet known'}. Show the SQL behind this strip.`}
         className={`flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] ${
           live
             ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
@@ -180,7 +217,12 @@ function SourceBadge({ source }: { source?: 'tiger' | 'mock' }) {
         {source ?? '…'}
         <span className="text-slate-400">· sql</span>
       </button>
-      <div className="pointer-events-none absolute bottom-full left-0 z-30 mb-2 hidden w-[520px] rounded-lg border border-slate-200 bg-white p-3 shadow-xl group-focus-within:block group-hover:block">
+      <div
+        id={panelId}
+        className={`absolute bottom-full left-0 z-30 mb-2 w-[520px] rounded-lg border border-slate-200 bg-white p-3 shadow-xl ${
+          open ? 'block' : 'hidden group-hover:block'
+        }`}
+      >
         <p className="mb-2 text-[10px] uppercase tracking-wider text-slate-400">
           {live
             ? 'Reading live from TimescaleDB on Tiger Cloud'
@@ -219,8 +261,13 @@ function Sparkline({
   const mid = (hi + lo) / 2;
   const y = (t: number) =>
     SPARK_H - SPARK_PAD - ((t - (mid - span / 2)) / span) * (SPARK_H - 2 * SPARK_PAD);
+  // Inset horizontally as well as vertically. Without this the newest reading
+  // lands at x = SPARK_W and the right half of its marker falls outside the
+  // viewBox — which is exactly where the eye goes during the cold snap.
   const x = (i: number) =>
-    temps.length < 2 ? SPARK_W / 2 : (i / (temps.length - 1)) * SPARK_W;
+    temps.length < 2
+      ? SPARK_W / 2
+      : (i / (temps.length - 1)) * (SPARK_W - 2 * SPARK_PAD) + SPARK_PAD;
 
   return (
     <svg

@@ -308,12 +308,16 @@ function TelemetryColumn({ verdict }: { verdict: Verdict }) {
   const body = `Curing thermocouples on the pour: average ${s.avg_temp_c.toFixed(1)} °C${low} across ${s.samples} reading${s.samples === 1 ? '' : 's'} in the last ${window}.`;
 
   if (s.samples < floor) {
+    // Neutral, not amber, so this column and the `info` trace card two rows up
+    // give the same fact the same weight. The trace card's signal comes off the
+    // wire from `_sensor_card`, so matching had to happen here — the backend
+    // ruled that "too few readings to judge" is neither a warning about the
+    // pour nor a clean bill of health, and this column may not overrule it.
     return (
       <Column
         title="Site telemetry"
         body={body}
         footer={`${where} · ${s.samples} of ${floor} readings — too sparse to judge`}
-        footerTone="warn"
       />
     );
   }
