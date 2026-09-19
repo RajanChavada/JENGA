@@ -21,9 +21,13 @@ class Task(BaseModel):
     x: float
     y: float
     duration_days: int
+    #: Contractual due day, an offset from the project start. None when the schedule has no dates.
+    due_day: int | None = None
     state: TaskState
     spec_text: str
     depends_on: list[str]
+    #: Unverified predecessors; populated only while the task is derived `blocked`.
+    blocked_by: list[str] = []
     # CPM, computed by the backend
     es: int
     ef: int
@@ -375,3 +379,95 @@ class RouteCheckResponse(BaseModel):
     events_scanned: int
     site: RouteSite
     routes: list[RouteRisk]
+
+
+# --- contractor portal ------------------------------------------------------
+
+OwnerDecision = Literal["pending", "approved", "rejected"]
+
+
+class Report(BaseModel):
+    id: str
+    task_id: str
+    project_id: str
+    report_text: str
+    # The AI's recommendation. Withheld (None) from the contractor's view.
+    verdict: dict | None = None
+    owner_decision: OwnerDecision
+    owner_note: str | None = None
+    #: True when the owner approved a report the AI had not approved.
+    ai_override: bool = False
+    #: Predicted cost of a denial, stored when the owner denies. A reduced copy
+    #: (rework days, finish date) in the contractor's view.
+    impact: dict | None = None
+    submitted_at: str | None = None
+    decided_at: str | None = None
+
+
+class DecisionRequest(BaseModel):
+    decision: Literal["approve", "deny"]
+    #: Required to deny, and to approve against the AI's recommendation.
+    note: str | None = None
+
+
+class DecisionResponse(BaseModel):
+    report: Report
+    tasks: list[Task]
+
+
+class PortalParty(BaseModel):
+    id: str
+    name: str
+
+
+class PortalProject(BaseModel):
+    id: str
+    name: str
+    owner: PortalParty
+    contractor: PortalParty
+    start_date: str
+    total: int
+    verified: int
+    active: int
+    under_review: int
+    blocked: int
+    awaiting_review: int
+
+
+class PortalOverview(BaseModel):
+    owners: list[PortalParty]
+    companies: list[PortalParty]
+    projects: list[PortalProject]
+
+
+class AffectedTask(BaseModel):
+    id: str
+    name: str
+    finish_date_before: str
+    finish_date_after: str
+    due_date: str | None = None
+    late_by_days: int
+    newly_late: bool
+
+
+class Impact(BaseModel):
+    task_id: str
+    rework_days: int
+    rationale: list[str]
+    float_consumed: int
+    absorbed_by_float: bool
+    project_slipped_days: int
+    baseline_finish_date: str
+    predicted_finish_date: str
+    project_deadline_date: str
+    days_past_deadline: int
+    critical_path_changed: bool
+    affected: list[AffectedTask]
+
+
+class QueueItem(BaseModel):
+    #: "If you deny": what denying this report would do to the schedule.
+    impact: Impact | None = None
+    report: Report
+    project_name: str
+    task_name: str

@@ -2,18 +2,23 @@
 
 import { create } from 'zustand';
 import * as api from '@/lib/api';
-import * as fx from '@/lib/fixtures';
 import type {
   AttributionEntry,
   GraphEdge,
   HotzoneResponse,
+  PortalOverview,
+  PortalProject,
   PurchaseOrder,
+  QueueItem,
+  Report,
+  Role,
   RouteCheckResponse,
   ScheduleAnalytics,
+  SensorPayload,
   SpendAnalytics,
   Task,
   TaskState,
-  Verdict,
+  Verdict, 
   Zone,
 } from '@/lib/types';
 
@@ -23,6 +28,8 @@ export const CASCADE_STEP_MS = 120;
 /** The one site JENGA ships onboarded. Mirrors `db.DEFAULT_PROJECT_ID`. */
 export const DEFAULT_PROJECT_ID = 'eglinton-west-station';
 const DEFAULT_SITE_NAME = 'Eglinton West Station';
+
+const IDENTITY_KEY = 'jenga.identity';
 
 export type ViewMode = 'blueprint' | 'logical';
 
@@ -80,20 +87,36 @@ function recordStages(
   return next;
 }
 
-/** How a landed verdict resolves its pipeline activity entry. */
-function verdictEvent(v: Verdict): Partial<Omit<AgentEvent, 'id' | 'ts'>> {
-  const gz = `${Math.round(v.gptzero.ai_probability * 100)}% AI-authorship`;
-  const vis =
-    v.vision.matches_claim === null
-      ? 'vision cannot establish'
-      : v.vision.matches_claim
-        ? 'vision consistent'
-        : 'vision contradicts';
-  return {
-    status: v.status === 'APPROVED' ? 'ok' : v.status === 'DISPUTED' ? 'error' : 'warn',
-    title: `Verdict on ${v.task_id}: ${v.status.replace('_', ' ')}`,
-    detail: `${gz} · ${vis} · confidence ${v.confidence.toFixed(2)}`,
-  };
+function persistIdentity(s: { role: Role; ownerId: string; companyId: string }) {
+  try {
+    localStorage.setItem(
+      IDENTITY_KEY,
+      JSON.stringify({ role: s.role, ownerId: s.ownerId, companyId: s.companyId }),
+    );
+  } catch {
+    /* private window or blocked storage: the switcher still works for the session */
+  }
+}
+
+/**
+ * Re-read the active project's tasks and submissions without the loading flash
+ * `load` causes. Ignored if the site changed while the request was in flight.
+ */
+async function refreshSite(projectId: string) {
+  const { role } = useJenga.getState();
+  const [g, reports] = await Promise.all([
+    api.fetchGraph(projectId),
+    api.fetchReports(projectId, role === 'contractor' ? 'contractor' : 'owner'),
+  ]);
+  if (useJenga.getState().activeProjectId !== projectId) return;
+  useJenga.setState((s) => ({
+    tasks: g.tasks,
+    edges: g.edges,
+    criticalPath: g.critical_path,
+    projectDuration: g.project_duration,
+    reports,
+    stageHistory: recordStages(s.stageHistory, g.tasks),
+  }));
 }
 
 interface JengaState {
@@ -135,15 +158,30 @@ interface JengaState {
   routeRisk: RouteCheckResponse | null;
   /** True while a radar pass is running. */
   checkingRoutes: boolean;
+  /** The earned-schedule S-curve and spend velocity, refreshed after actions. */
+  schedule: ScheduleAnalytics | null;
+  spend: SpendAnalytics | null;
 
   /** Live log of agentic operations, newest first. Survives site switches. */
   activity: AgentEvent[];
   /** Whether the activity rail is open. */
   activityOpen: boolean;
   sideEffect: string | null;
-  /** The earned-schedule S-curve and spend velocity, refreshed after actions. */
-  schedule: ScheduleAnalytics | null;
-  spend: SpendAnalytics | null;
+  /** Curing telemetry, keyed by ticket. Written by the poll in <SensorStrip>. */
+  sensors: Record<string, SensorPayload>;
+
+  /**
+   * Who is looking. A demo role switcher, not authentication: the API scopes by
+   * the ids it is given and the UI filters by these. See CONTRACT.md.
+   */
+  role: Role;
+  ownerId: string;
+  companyId: string;
+  portal: PortalOverview | null;
+  /** The active project's submissions. The contractor's copy carries no verdicts. */
+  reports: Report[];
+  /** Updates awaiting the current owner's decision, across their projects. */
+  queue: QueueItem[];
 
   loading: boolean;
   busy: boolean;
@@ -156,6 +194,8 @@ interface JengaState {
   scrapeHotzones: () => Promise<void>;
   /** Supply-line radar: trace delivery routes and check them against 511. */
   checkRoutes: () => Promise<void>;
+  /** Refresh both analytics payloads; logs a new escalation into the rail. */
+  loadAnalytics: () => Promise<void>;
   loadSample: () => Promise<void>;
   reset: () => Promise<void>;
   setView: (v: SiteView) => void;
@@ -165,10 +205,16 @@ interface JengaState {
   selectTask: (id: string | null) => void;
   selectZone: (z: Zone | null) => void;
   clearVerdict: () => void;
-  /** Refresh both analytics payloads; logs a new escalation into the rail. */
-  loadAnalytics: () => Promise<void>;
-  submit: (submissionId: string) => Promise<void>;
-  submitText: (taskId: string, text: string, filename: string) => Promise<void>;
+  loadSensors: (id: string) => Promise<void>;
+  restoreIdentity: () => void;
+  setRole: (role: Role) => Promise<void>;
+  setOwner: (id: string) => Promise<void>;
+  setCompany: (id: string) => Promise<void>;
+  refreshPortal: () => Promise<void>;
+  focusProject: (project: PortalProject) => Promise<void>;
+  /** Each returns the refusal message, or null on success. */
+  submitUpdate: (taskId: string, text: string, imageBase64: string | null) => Promise<string | null>;
+  decide: (reportId: string, decision: 'approve' | 'deny', note: string) => Promise<string | null>;
   runDispute: (taskId: string, delayDays: number, reason: string) => Promise<void>;
   /** Procurement actions on a PO. Each hits the backend and mirrors the result. */
   expeditePO: (poId: string) => Promise<void>;
@@ -219,6 +265,7 @@ const EMPTY_SITE = {
   sideEffect: null,
   attributions: [],
   purchaseOrders: [],
+  sensors: {},
   schedule: null,
   spend: null,
   // Routes are drawn from this site's POs to this site's pin; a site switch
@@ -235,16 +282,27 @@ export const useJenga = create<JengaState>((set, get) => ({
   activeSiteName: DEFAULT_SITE_NAME,
   view: 'micro',
 
-  mode: 'blueprint',
+  mode: 'logical',
   strict: true,
 
   hotzones: null,
   scrapingHotzones: false,
   scrapeError: null,
+
+  routeRisk: null,
   checkingRoutes: false,
+  schedule: null,
+  spend: null,
 
   activity: [],
   activityOpen: false,
+
+  role: 'owner',
+  ownerId: 'halton-transit',
+  companyId: 'ellis-civil',
+  portal: null,
+  reports: [],
+  queue: [],
 
   loading: true,
   offline: false,
@@ -252,10 +310,11 @@ export const useJenga = create<JengaState>((set, get) => ({
   async load(projectId) {
     const target = projectId ?? get().activeProjectId ?? DEFAULT_PROJECT_ID;
     set({ loading: true, activeProjectId: target });
-    const [g, pos, hotzones] = await Promise.all([
+    const [g, pos, hotzones, reports] = await Promise.all([
       api.fetchGraph(target),
       api.fetchPurchaseOrders(),
       api.fetchHotzones(),
+      api.fetchReports(target, get().role === 'contractor' ? 'contractor' : 'owner'),
     ]);
     // Two sites clicked in quick succession: the slower response is the older
     // site's, and must not land on top of the newer one.
@@ -271,10 +330,12 @@ export const useJenga = create<JengaState>((set, get) => ({
       baseline: Object.fromEntries(g.tasks.map((t) => [t.id, { es: t.es, ef: t.ef }])),
       stageHistory: recordStages({}, g.tasks),
       purchaseOrders: pos,
+      reports,
       hotzones,
       loading: false,
       offline: api.isOffline(),
     });
+    // The curves belong to the freshly loaded site.
     void get().loadAnalytics();
   },
 
@@ -323,10 +384,9 @@ export const useJenga = create<JengaState>((set, get) => ({
   },
 
   /**
-   * Supply-line radar. One press: 511 closures via Browserbase, vendor→site
-   * routes via OSRM, proximity analysis, CPM preview — and when the agent
-   * expedited a PO, the ledger is re-read so the action shows everywhere the
-   * PO does. Every outcome, including the seeded fallback, is announced in the
+   * Supply-line radar: trace every PO's delivery route via OSRM and check it
+   * against Ontario 511's live closure feed (fetched through Browserbase).
+   * Discrete user action — announces itself and its outcome in the activity
    * rail with the same three-way honesty as the scrape.
    */
   async checkRoutes() {
@@ -383,6 +443,35 @@ export const useJenga = create<JengaState>((set, get) => ({
   },
 
   /**
+   * Refresh the S-curve and spend analytics. A null response (backend down)
+   * keeps the previous data on screen rather than blanking the band. A *new*
+   * escalation — one the rail has not seen — logs as an activity event, so the
+   * governance moment is announced, not just drawn.
+   */
+  async loadAnalytics() {
+    const site = get().activeProjectId;
+    const [schedule, spend] = await Promise.all([
+      api.fetchScheduleAnalytics(),
+      api.fetchSpendAnalytics(),
+    ]);
+    if (get().activeProjectId !== site) return; // stale by site switch
+    const prev = get().spend?.escalation?.at;
+    set((s) => ({
+      schedule: schedule ?? s.schedule,
+      spend: spend ?? s.spend,
+    }));
+    const esc = spend?.escalation;
+    if (esc && esc.at !== prev) {
+      get().logActivity({
+        source: 'zip',
+        status: 'error',
+        title: 'Governance escalation — spend outrunning the build',
+        detail: esc.message,
+      });
+    }
+  },
+
+  /**
    * Drill from a map pin into that site. The hotzone carries the project id, so
    * this is the only place that decides which of the two micro-views the map
    * opens: the dependency graph, or the pitch for onboarding a site we have no
@@ -430,8 +519,7 @@ export const useJenga = create<JengaState>((set, get) => ({
       attributions: [],
       sideEffect: null,
       selectedTaskId: null,
-      schedule: null,
-      spend: null,
+      sensors: {},
     });
     // Nothing to re-seed on a site with no project: reloading here would pull
     // the default project's graph onto a pin that has no site behind it.
@@ -465,134 +553,141 @@ export const useJenga = create<JengaState>((set, get) => ({
   clearVerdict: () => set({ verdict: null, sideEffect: null }),
 
   /**
-   * Refresh the S-curve and spend analytics. A null response (backend down)
-   * keeps the previous data on screen rather than blanking the band. A *new*
-   * escalation — one the rail has not seen — logs as an activity event, so the
-   * governance moment is announced, not just drawn.
+   * One poll's worth of telemetry. Merged per ticket rather than replacing the
+   * map, so switching selection back and forth keeps the previous sparkline on
+   * screen instead of blanking it for one tick.
    */
-  async loadAnalytics() {
-    const site = get().activeProjectId;
-    const [schedule, spend] = await Promise.all([
-      api.fetchScheduleAnalytics(),
-      api.fetchSpendAnalytics(),
-    ]);
-    if (get().activeProjectId !== site) return; // stale by site switch
-    const prev = get().spend?.escalation?.at;
-    set((s) => ({
-      schedule: schedule ?? s.schedule,
-      spend: spend ?? s.spend,
-    }));
-    const esc = spend?.escalation;
-    if (esc && esc.at !== prev) {
-      get().logActivity({
-        source: 'zip',
-        status: 'error',
-        title: 'Governance escalation — spend outrunning the build',
-        detail: esc.message,
-      });
+  async loadSensors(id) {
+    const payload = await api.fetchSensors(id);
+    // A poll in flight when the site changed belongs to the old project. The
+    // strip is already unmounted by then, but writing the reading back would
+    // put the ticket straight into the map the switch just cleared.
+    if (!get().tasks.some((t) => t.id === id)) return;
+    set((s) => ({ sensors: { ...s.sensors, [id]: payload } }));
+  },
+
+  /** Read the saved identity after hydration; reading it at module init would mismatch the server HTML. */
+  restoreIdentity() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(IDENTITY_KEY) ?? 'null');
+      if (saved && (saved.role === 'owner' || saved.role === 'contractor')) {
+        set({
+          role: saved.role,
+          ownerId: saved.ownerId ?? get().ownerId,
+          companyId: saved.companyId ?? get().companyId,
+        });
+      }
+    } catch {
+      /* private window or blocked storage: the defaults are fine */
     }
   },
 
-  async submit(submissionId) {
-    const sub = fx.SUBMISSIONS.find((s) => s.id === submissionId);
-    if (!sub) return;
-    const site = get().activeProjectId;
-    set({ busy: true, verdict: null, sideEffect: null });
-    const ev = get().logActivity({
-      source: 'agent',
-      status: 'running',
-      title: `Verifying ${sub.task_id} — 5-node pipeline`,
-      detail: 'GPTZero authorship → vision → historical memory → telemetry → arbiter',
-    });
-
-    const verdict = await api.verify(sub.task_id, submissionId, get().tasks, get().strict);
-    get().updateActivity(ev, verdictEvent(verdict));
-    // Verification takes seconds; the presenter can be on another site by the
-    // time it answers. That verdict is about the site it was submitted from.
-    // The switch already cleared `busy`, so there is nothing to unwind.
-    if (get().activeProjectId !== site) return;
-    const nextState = fx.stateForVerdict(verdict.status);
-
-    set((s) => {
-      const tasks = s.tasks.map((t) =>
-        t.id === sub.task_id ? { ...t, state: nextState } : t,
-      );
-      return {
-        verdict,
-        busy: false,
-        sideEffect: fx.sideEffectFor(submissionId),
-        selectedTaskId: sub.task_id,
-        offline: api.isOffline(),
-        tasks,
-        stageHistory: recordStages(s.stageHistory, tasks),
-      };
-    });
-
-    // The verdict just landed in the event stream; redraw the curves.
-    void get().loadAnalytics();
-
-    // A shortage in the report reschedules its linked PO. Mirrors the backend's
-    // Zip mock so the panel is right whether we are live or on fixtures.
-    const zip = fx.zipActionFor(submissionId);
-    if (zip) {
-      get().logActivity({
-        source: 'zip',
-        status: 'ok',
-        title: `Shortage detected — ${zip.po_id} expedited`,
-        detail: zip.reason,
-      });
-      set((s) => ({
-        purchaseOrders: s.purchaseOrders.map((po) =>
-          po.id === zip.po_id
-            ? {
-                ...po,
-                status: 'rescheduled',
-                delivery_date: zip.new_delivery_date,
-                last_action: zip.reason,
-              }
-            : po,
-        ),
-      }));
-    }
+  async setRole(role) {
+    set({ role });
+    persistIdentity(get());
+    await get().refreshPortal();
+  },
+  async setOwner(ownerId) {
+    set({ ownerId });
+    persistIdentity(get());
+    await get().refreshPortal();
+  },
+  async setCompany(companyId) {
+    set({ companyId });
+    persistIdentity(get());
+    await get().refreshPortal();
   },
 
   /**
-   * Same verification path as `submit`, but the claim text came from a document
-   * the user uploaded rather than one of the canned submissions. No side-effect
-   * lookup: there is no fixture entry to read procurement fallout from.
+   * Reload everything the current identity can see, and put the graph on one of
+   * its projects if the one on screen belongs to someone else. A site the portal
+   * does not know (a hotzone with no project) is left alone.
    */
-  async submitText(taskId, text, filename) {
+  async refreshPortal() {
+    const { role, ownerId, companyId } = get();
+    const params = role === 'owner' ? { ownerId } : { companyId };
+    const [portal, queue] = await Promise.all([
+      api.fetchPortal(params),
+      role === 'owner' ? api.fetchQueue(ownerId) : Promise.resolve([] as QueueItem[]),
+    ]);
+    if (get().role !== role) return; // the switcher moved again while this was in flight
+    set({ portal, queue, offline: api.isOffline() });
+
+    const active = get().activeProjectId;
+    const mine = portal.projects.some((p) => p.id === active);
+    if (!mine && portal.projects.length > 0 && (role === 'contractor' || active !== null)) {
+      await get().focusProject(portal.projects[0]);
+    } else if (active && mine) {
+      await refreshSite(active);
+    }
+  },
+
+  async focusProject(project) {
+    set({
+      ...EMPTY_SITE,
+      reports: [],
+      view: 'micro',
+      activeProjectId: project.id,
+      activeSiteName: project.name,
+      loading: true,
+    });
+    await get().load(project.id);
+    await refreshSite(project.id);
+  },
+
+  async submitUpdate(taskId, text, imageBase64) {
     const site = get().activeProjectId;
-    set({ busy: true, verdict: null, sideEffect: null });
+    if (!site) return 'No project selected.';
+    set({ busy: true });
     const ev = get().logActivity({
       source: 'agent',
       status: 'running',
-      title: `Verifying ${taskId} from ${filename}`,
+      title: `Verifying ${taskId} — 5-node pipeline`,
       detail: 'GPTZero authorship → vision → historical memory → telemetry → arbiter',
     });
-
-    const verdict = await api.verifyWithText(taskId, text, get().tasks, get().strict);
-    get().updateActivity(ev, verdictEvent(verdict));
-    if (get().activeProjectId !== site) return; // see `submit`
-    const nextState = fx.stateForVerdict(verdict.status);
-
-    set((s) => {
-      const tasks = s.tasks.map((t) =>
-        t.id === taskId ? { ...t, state: nextState } : t,
-      );
-      return {
-        verdict: {
-          ...verdict,
-          evidence: { ...verdict.evidence, claim: `${filename} — ${verdict.evidence.claim}` },
-        },
-        busy: false,
-        selectedTaskId: taskId,
-        offline: api.isOffline(),
-        tasks,
-        stageHistory: recordStages(s.stageHistory, tasks),
-      };
+    try {
+      await api.submitReport(site, taskId, text, imageBase64, get().tasks, get().strict);
+    } catch (err) {
+      set({ busy: false });
+      const message = err instanceof Error ? err.message : 'Submission failed.';
+      get().updateActivity(ev, { status: 'error', title: `Update on ${taskId} refused`, detail: message });
+      return message;
+    }
+    get().updateActivity(ev, {
+      status: 'ok',
+      title: `Update on ${taskId} sent for owner review`,
+      detail: 'The AI recommendation is attached for the owner to weigh.',
     });
+    set({ busy: false, offline: api.isOffline() });
+    if (get().activeProjectId === site) await refreshSite(site);
+    const { role, ownerId, companyId } = get();
+    set({ portal: await api.fetchPortal(role === 'owner' ? { ownerId } : { companyId }) });
+    return null;
+  },
+
+  async decide(reportId, decision, note) {
+    let res;
+    try {
+      res = await api.decideReport(reportId, decision, note);
+    } catch (err) {
+      return err instanceof Error ? err.message : 'Decision failed.';
+    }
+    if (get().activeProjectId === res.report.project_id) {
+      set((s) => ({
+        tasks: res.tasks,
+        stageHistory: recordStages(s.stageHistory, res.tasks),
+      }));
+    }
+    const { ownerId } = get();
+    const [queue, portal] = await Promise.all([
+      api.fetchQueue(ownerId),
+      api.fetchPortal({ ownerId }),
+    ]);
+    set({ queue, portal, offline: api.isOffline() });
+    if (get().activeProjectId) await refreshSite(get().activeProjectId!);
+    // A denial reworks the schedule; the earned/spend curves must follow.
     void get().loadAnalytics();
+    return null;
   },
 
   async runDispute(taskId, delayDays, reason) {
@@ -662,7 +757,7 @@ export const useJenga = create<JengaState>((set, get) => ({
             cascading: false,
             offline: api.isOffline(),
           });
-          // The slip changed the planned curve; redraw against it.
+          // The slip is now in the schedule; the S-curve must reflect it.
           void get().loadAnalytics();
         }
       }, i * CASCADE_STEP_MS);
@@ -698,6 +793,7 @@ export const useJenga = create<JengaState>((set, get) => ({
     set((s) => ({
       purchaseOrders: s.purchaseOrders.map((po) => (po.id === poId ? updated : po)),
     }));
+    // The expedite just landed in the event stream; redraw the spend curve.
     void get().loadAnalytics();
   },
 
@@ -750,10 +846,8 @@ export const useJenga = create<JengaState>((set, get) => ({
     if (result.purchase_order && get().activeProjectId === site) {
       const po = result.purchase_order;
       set((s) => ({ purchaseOrders: [po, ...s.purchaseOrders] }));
+      void get().loadAnalytics();
     }
-    // The commitment just landed in the spend stream — redraw, and let
-    // loadAnalytics announce the escalation if this PO tipped it over.
-    void get().loadAnalytics();
     return result;
   },
 

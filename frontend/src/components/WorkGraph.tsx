@@ -1,11 +1,12 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import {
   ReactFlow,
   ReactFlowProvider,
   ViewportPortal,
   Controls,
+  useReactFlow,
   type Edge,
   type Node,
 } from '@xyflow/react';
@@ -14,7 +15,7 @@ import '@xyflow/react/dist/style.css';
 
 import { nodeTypes, NODE_H, NODE_W, type TaskNodeData } from './TaskNode';
 import { useJenga, type ViewMode } from '@/store/useJenga';
-import { STATE_STYLE } from '@/lib/theme';
+import { DENIED_STYLE, STATE_STYLE } from '@/lib/theme';
 import type { GraphEdge, Task } from '@/lib/types';
 
 /** Authoritative blueprint coordinate space. Task x/y are pixels in this space. */
@@ -50,6 +51,23 @@ function Canvas() {
   const selectedTaskId = useJenga((s) => s.selectedTaskId);
   const selectedZone = useJenga((s) => s.selectedZone);
   const selectTask = useJenga((s) => s.selectTask);
+
+  const { fitView } = useReactFlow();
+  // Which nodes are on screen. Task ids only: a state change moves nothing and
+  // must not reset the zoom. A different site remounts the flow (`key` below), so
+  // its own fit-on-mount frames the new nodes once they are measured.
+  const graphKey = useMemo(() => tasks.map((t) => t.id).join(), [tasks]);
+
+  // `fitView` on <ReactFlow> fits once, on mount. Switching blueprint <-> logical
+  // puts the same nodes somewhere else entirely, so refit after the new positions
+  // are applied. (`useNodesInitialized` reads false throughout, so it can't gate this.)
+  const lastMode = useRef(mode);
+  useEffect(() => {
+    if (lastMode.current === mode) return;
+    lastMode.current = mode;
+    const timer = setTimeout(() => void fitView({ duration: 200, padding: 0.1 }), 60);
+    return () => clearTimeout(timer);
+  }, [mode, fitView]);
 
   const logicalPos = useMemo(
     () => (mode === 'logical' ? layout(tasks, edgesRaw) : null),
@@ -95,6 +113,7 @@ function Canvas() {
 
   return (
     <ReactFlow
+      key={graphKey}
       nodes={nodes}
       edges={edges}
       nodeTypes={nodeTypes}
@@ -208,6 +227,10 @@ function Legend() {
           {STATE_STYLE[k].label}
         </div>
       ))}
+      <div className="flex items-center gap-2 text-[10px] text-slate-500">
+        <span className="h-2 w-2 rounded-sm" style={{ background: DENIED_STYLE.hex }} />
+        {DENIED_STYLE.label}
+      </div>
     </div>
   );
 }

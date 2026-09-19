@@ -1,4 +1,4 @@
-import type { TaskState, Zone } from './types';
+import type { Report, Task, TaskState, Zone } from './types';
 
 /**
  * One state -> appearance table, read by both React Flow and Three.js so the 2D
@@ -69,21 +69,54 @@ export const STATE_STYLE: Record<TaskState, StateStyle> = {
 };
 
 /**
- * A zone shows its most alarming task. Disputed beats under_review beats the
- * rest, so a problem is never hidden behind a neighbouring green box.
+ * A denial is not a task state (CONTRACT.md fixes those): the owner's "no" sends
+ * the task back to `active`, and the only record of it is the task's latest
+ * report. So "denied" is derived: active, and the last update was rejected. It
+ * clears by itself when the contractor resubmits (the latest report is pending
+ * again) or the owner approves.
  */
-const SEVERITY: TaskState[] = [
-  'disputed',
-  'under_review',
-  'blocked',
-  'active',
-  'pending',
-  'verified',
-];
+export function isDenied(task: Task, reports: Report[]): boolean {
+  if (task.state !== 'active') return false;
+  const latest = reports.filter((r) => r.task_id === task.id).at(-1);
+  return latest?.owner_decision === 'rejected';
+}
 
-export function aggregateZoneState(states: TaskState[]): TaskState {
-  for (const s of SEVERITY) if (states.includes(s)) return s;
+export function deniedTaskIds(tasks: Task[], reports: Report[]): Set<string> {
+  return new Set(tasks.filter((t) => isDenied(t, reports)).map((t) => t.id));
+}
+
+/** Solid red, pulsing: distinct from `disputed`, which is a red wireframe. */
+export const DENIED_STYLE: StateStyle = {
+  label: 'Denied',
+  chip: 'border-red-400 bg-red-100 text-red-800',
+  hex: '#dc2626',
+  wireframe: false,
+  opacity: 0.9,
+  pulse: true,
+};
+
+export type ZoneVisual = TaskState | 'denied';
+
+/**
+ * What a zone box shows. The worst live problem wins (denied, disputed, under
+ * review), then active work, then not-yet-startable work. Active outranks
+ * blocked: a zone with work in progress must not read as idle just because its
+ * later packages are waiting. Verified shows only when nothing is left, so a
+ * zone's completed tasks are counted on its label instead (`zoneProgress`).
+ */
+export function zoneVisual(tasks: Task[], denied: Set<string>): ZoneVisual {
+  if (tasks.some((t) => denied.has(t.id))) return 'denied';
+  if (tasks.length > 0 && tasks.every((t) => t.state === 'verified')) return 'verified';
+  for (const s of ZONE_ORDER) if (tasks.some((t) => t.state === s)) return s;
   return 'pending';
+}
+
+const ZONE_ORDER: TaskState[] = ['disputed', 'under_review', 'active', 'blocked', 'pending'];
+
+/** "3/5 verified", or null for an empty zone. */
+export function zoneProgress(tasks: Task[]): string | null {
+  if (tasks.length === 0) return null;
+  return `${tasks.filter((t) => t.state === 'verified').length}/${tasks.length} verified`;
 }
 
 export const ZONE_LABEL: Record<Zone, string> = {

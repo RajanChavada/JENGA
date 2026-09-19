@@ -1,15 +1,19 @@
 import * as fx from './fixtures';
+import * as local from './portalFixtures';
 import type {
+  DecisionResponse,
   DisputeResponse,
   Escalation,
   GraphResponse,
   HotzoneResponse,
+  PortalOverview,
   PurchaseOrder,
+  QueueItem,
+  Report,
   RouteCheckResponse,
   ScheduleAnalytics,
   SpendAnalytics,
   Task,
-  Verdict,
 } from './types';
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
@@ -56,7 +60,10 @@ async function call<T>(
  */
 export function fetchGraph(projectId?: string): Promise<GraphResponse> {
   const q = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
-  return call(`/api/graph${q}`, undefined, fx.graph);
+  return call(`/api/graph${q}`, undefined, () => {
+    const g = fx.graph();
+    return projectId ? { ...g, tasks: local.tasksFor(projectId) } : g;
+  });
 }
 
 export function fetchPurchaseOrders(): Promise<PurchaseOrder[]> {
@@ -144,27 +151,6 @@ export async function checkRoutes(): Promise<RouteCheckResponse | null> {
     console.warn('[jenga] route check did not complete.', err);
     return null;
   }
-}
-
-export function verify(
-  taskId: string,
-  submissionId: string,
-  tasks: Task[],
-  strict = true,
-): Promise<Verdict> {
-  const sub = fx.SUBMISSIONS.find((s) => s.id === submissionId)!;
-  return call<Verdict>(
-    `/api/tasks/${taskId}/verify?strict=${strict}`,
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        report_text: sub.report_text,
-        image_base64: sub.image,
-        transcript: sub.transcript,
-      }),
-    },
-    () => fx.verdictFor(submissionId, tasks, strict),
-  );
 }
 
 /* ---------------------------------------------------------------------------
@@ -326,16 +312,83 @@ export function extractTasks(file: File): Promise<ExtractedTasks> {
   return upload<ExtractedTasks>('/api/documents/extract-tasks', file);
 }
 
-/** Verify a task against text pulled out of an uploaded document. */
-export function verifyWithText(
+/* --- contractor portal ---------------------------------------------------- */
+
+/**
+ * The backend's own reason (a 409 for a blocked task, a 422 for a missing note)
+ * has to reach the person who caused it, so the mutations below do not go
+ * through `call()`: it would swallow that error and answer from fixtures, and
+ * would latch the whole session offline over what was a correct refusal.
+ * Only an unreachable backend degrades to the local mirror.
+ */
+async function mutate<T>(path: string, body: unknown, fallback: () => T): Promise<T> {
+  if (offline) return fallback();
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (err) {
+    console.warn(`[jenga] ${path} unreachable, using fixtures.`, err);
+    offline = true;
+    return fallback();
+  }
+  if (!res.ok) {
+    const detail = await res.json().then((j) => j?.detail, () => null);
+    throw new Error(typeof detail === 'string' ? detail : `${res.status} ${res.statusText}`);
+  }
+  return (await res.json()) as T;
+}
+
+export function fetchPortal(params: { companyId?: string; ownerId?: string }): Promise<PortalOverview> {
+  const q = new URLSearchParams();
+  if (params.companyId) q.set('company_id', params.companyId);
+  if (params.ownerId) q.set('owner_id', params.ownerId);
+  return call(`/api/portal?${q}`, undefined, () => local.overview(params));
+}
+
+export function fetchReports(projectId: string, view: 'owner' | 'contractor'): Promise<Report[]> {
+  return call(
+    `/api/projects/${encodeURIComponent(projectId)}/reports?view=${view}`,
+    undefined,
+    () => local.projectReports(projectId, view),
+  );
+}
+
+export function fetchQueue(ownerId: string): Promise<QueueItem[]> {
+  return call(`/api/portal/owners/${encodeURIComponent(ownerId)}/queue`, undefined, () =>
+    local.queue(ownerId),
+  );
+}
+
+/** A contractor's progress update. The AI verdict comes back to the owner, not to them. */
+export async function submitReport(
+  projectId: string,
   taskId: string,
   reportText: string,
+  imageBase64: string | null,
   tasks: Task[],
   strict = true,
-) {
-  return call<Verdict>(
-    `/api/tasks/${taskId}/verify?strict=${strict}`,
-    { method: 'POST', body: JSON.stringify({ report_text: reportText }) },
-    () => fx.verdictForTask(taskId, tasks, strict),
+): Promise<void> {
+  await mutate(
+    `/api/tasks/${encodeURIComponent(taskId)}/verify?strict=${strict}`,
+    { report_text: reportText, image_base64: imageBase64 },
+    () => {
+      local.submit(projectId, taskId, reportText, fx.verdictForTask(taskId, tasks, strict));
+      return null;
+    },
+  );
+}
+
+export function decideReport(
+  reportId: string,
+  decision: 'approve' | 'deny',
+  note: string,
+): Promise<DecisionResponse> {
+  return mutate<DecisionResponse>(`/api/reports/${reportId}/decision`, { decision, note }, () =>
+    local.decide(reportId, decision, note),
   );
 }

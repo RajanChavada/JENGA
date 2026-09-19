@@ -28,6 +28,7 @@ const ACCEPT = '.pdf,.doc,.docx,.txt,.md';
 
 export function DocumentUpload({
   onReportText,
+  reportActionLabel = 'Run verification →',
   initialMode = 'report',
 }: {
   /**
@@ -36,6 +37,8 @@ export function DocumentUpload({
    * report against, so that half of the component is not offered at all.
    */
   onReportText?: (text: string, filename: string) => void;
+  /** Label of the button that hands the extracted text to `onReportText`. */
+  reportActionLabel?: string;
   /** Which tab opens first. Onboarding a new site starts on the blueprint. */
   initialMode?: Mode;
 }) {
@@ -276,7 +279,7 @@ export function DocumentUpload({
                 onClick={() => onReportText(doc.text, doc.filename)}
                 className="mt-2 rounded-md bg-slate-900 px-2.5 py-1 text-[11px] font-medium text-white transition-colors hover:bg-slate-800"
               >
-                Run verification →
+                {reportActionLabel}
               </button>
             )}
           </motion.div>
