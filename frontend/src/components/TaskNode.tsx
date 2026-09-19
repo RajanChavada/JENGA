@@ -26,14 +26,14 @@ function TaskNodeImpl({ data }: NodeProps) {
       transition={{ type: 'spring', stiffness: 320, damping: 26 }}
       style={{ width: NODE_W, height: NODE_H }}
       className={[
-        'rounded border px-2 py-1.5 text-[11px] backdrop-blur-sm',
+        'rounded-md border px-2 py-1.5 text-[11px] shadow-sm',
         style.chip,
-        selected ? 'ring-2 ring-white/70' : '',
-        task.is_critical ? 'shadow-[0_0_0_1px_rgba(239,68,68,0.55)]' : '',
+        selected ? 'ring-2 ring-slate-900/70' : '',
+        task.is_critical ? 'shadow-[0_0_0_1px_rgba(220,38,38,0.55)]' : '',
         task.state === 'under_review' ? 'animate-pulse' : '',
       ].join(' ')}
     >
-      <Handle type="target" position={Position.Left} className="!h-1.5 !w-1.5 !bg-slate-400" />
+      <Handle type="target" position={Position.Left} className="!h-1.5 !w-1.5 !bg-slate-300" />
 
       <div className="flex items-start gap-1.5">
         {thumbnail ? (
@@ -41,14 +41,14 @@ function TaskNodeImpl({ data }: NodeProps) {
           <img
             src={thumbnail}
             alt=""
-            className="h-9 w-9 shrink-0 rounded object-cover ring-1 ring-white/20"
+            className="h-9 w-9 shrink-0 rounded object-cover ring-1 ring-slate-200"
           />
         ) : null}
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline justify-between gap-1">
             <span className="font-mono text-[10px] opacity-70">{task.id}</span>
             {task.is_critical ? (
-              <span className="font-mono text-[9px] text-red-300">CRIT</span>
+              <span className="font-mono text-[9px] text-red-600">CRIT</span>
             ) : (
               <span className="font-mono text-[9px] opacity-50">
                 {task.total_float}d float
@@ -60,7 +60,7 @@ function TaskNodeImpl({ data }: NodeProps) {
         </div>
       </div>
 
-      <Handle type="source" position={Position.Right} className="!h-1.5 !w-1.5 !bg-slate-400" />
+      <Handle type="source" position={Position.Right} className="!h-1.5 !w-1.5 !bg-slate-300" />
     </motion.div>
   );
 }

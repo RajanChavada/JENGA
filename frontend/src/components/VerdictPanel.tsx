@@ -1,29 +1,29 @@
 'use client';
 
 import { AnimatePresence, motion } from 'framer-motion';
-import { AlertTriangle, Check, HelpCircle, X } from 'lucide-react';
+import { AlertTriangle, Check, Cpu, HelpCircle, X } from 'lucide-react';
 import { useJenga } from '@/store/useJenga';
-import type { Verdict } from '@/lib/types';
+import type { Verdict, VerdictStep } from '@/lib/types';
 
 const STATUS_STYLE = {
   APPROVED: {
-    ring: 'border-emerald-500/60',
-    text: 'text-emerald-300',
-    bg: 'bg-emerald-950/30',
+    ring: 'border-emerald-300',
+    text: 'text-emerald-700',
+    bg: 'bg-emerald-50',
     Icon: Check,
     blurb: 'Evidence corroborates the claim.',
   },
   DISPUTED: {
-    ring: 'border-red-500/60',
-    text: 'text-red-300',
-    bg: 'bg-red-950/30',
+    ring: 'border-red-300',
+    text: 'text-red-700',
+    bg: 'bg-red-50',
     Icon: X,
     blurb: 'Evidence contradicts the claim.',
   },
   UNDER_REVIEW: {
-    ring: 'border-amber-500/70',
-    text: 'text-amber-300',
-    bg: 'bg-amber-950/30',
+    ring: 'border-amber-300',
+    text: 'text-amber-700',
+    bg: 'bg-amber-50',
     Icon: HelpCircle,
     blurb: 'Evidence is insufficient to rule. Auto-approval refused.',
   },
@@ -43,9 +43,11 @@ export function VerdictPanel() {
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: 16 }}
-          className="absolute bottom-4 left-4 right-4 z-20 max-h-[52%] overflow-auto rounded-lg border border-slate-600 bg-slate-950/95 p-4 backdrop-blur"
+          className="absolute bottom-4 left-4 right-4 z-20 max-h-[52%] overflow-auto rounded-xl border border-slate-200 bg-white/95 p-4 shadow-lg backdrop-blur"
         >
           <Header verdict={verdict} onClose={clear} />
+
+          <AgentTrace verdict={verdict} />
 
           <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-4">
             <Column title="Blueprint specification" body={verdict.evidence.spec} />
@@ -77,7 +79,7 @@ export function VerdictPanel() {
           <Reasoning verdict={verdict} />
 
           {sideEffect && (
-            <p className="mt-3 rounded border border-sky-700/60 bg-sky-950/40 p-2 text-xs text-sky-200">
+            <p className="mt-3 rounded-lg border border-sky-200 bg-sky-50 p-2 text-xs text-sky-800">
               <span className="font-semibold">Procurement · </span>
               {sideEffect}
             </p>
@@ -101,7 +103,7 @@ export function VerdictPanel() {
                       : 'Manual audit confirmed shortfall against claim.',
                   )
                 }
-                className="rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-500 disabled:opacity-50"
               >
                 {busy ? 'Propagating…' : 'PM confirms 4-day slip & propagate →'}
               </button>
@@ -113,6 +115,96 @@ export function VerdictPanel() {
         </motion.div>
       )}
     </AnimatePresence>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Agent trace — the Rox beat made visible                                    */
+/* -------------------------------------------------------------------------- */
+
+const SIGNAL_DOT: Record<VerdictStep['signal'], string> = {
+  ok: 'bg-emerald-500',
+  warn: 'bg-amber-500',
+  bad: 'bg-red-500',
+  info: 'bg-slate-400',
+};
+
+/**
+ * Derive the four-node trace from the verdict when the backend didn't send one
+ * (pure-fixtures / offline mode), so the agent's reasoning is always visible.
+ */
+function synthesizeTrace(v: Verdict): VerdictStep[] {
+  const ai = Math.round(v.gptzero.ai_probability * 100);
+  const vc = Math.round(v.vision.confidence * 100);
+  const m = v.vision.matches_claim;
+
+  const vision: VerdictStep =
+    m === true
+      ? { node: 'vision_analysis', title: '2 · Visual analysis', detail: `Photo is consistent with the claim (${vc}% confidence).`, signal: 'ok' }
+      : m === false
+        ? { node: 'vision_analysis', title: '2 · Visual analysis', detail: `Photo contradicts the claim (${vc}% confidence).`, signal: 'bad' }
+        : { node: 'vision_analysis', title: '2 · Visual analysis', detail: `Image cannot establish the claim (${vc}% confidence).`, signal: 'warn' };
+
+  const arbiter: VerdictStep = {
+    node: 'arbiter',
+    title: '4 · Arbiter',
+    detail:
+      v.status === 'APPROVED'
+        ? 'Sources agree — approved.'
+        : v.status === 'DISPUTED'
+          ? 'Sources conflict, evidence legible — disputed.'
+          : 'Evidence insufficient — declined to rule, routed to a human.',
+    signal: v.status === 'APPROVED' ? 'ok' : v.status === 'DISPUTED' ? 'bad' : 'warn',
+  };
+
+  return [
+    {
+      node: 'gptzero_gate',
+      title: '1 · Authorship gate',
+      detail: v.gptzero.flagged
+        ? `Report scores ${ai}% AI-authorship — flagged, cannot auto-approve on prose.`
+        : `Report scores ${ai}% AI-authorship — reads as first-hand.`,
+      signal: v.gptzero.flagged ? 'bad' : 'ok',
+    },
+    vision,
+    {
+      node: 'historical_memory',
+      title: '3 · Historical memory',
+      detail: v.evidence.historical
+        ? 'Compared against similar past work packages.'
+        : 'No close historical match found.',
+      signal: 'info',
+    },
+    arbiter,
+  ];
+}
+
+function AgentTrace({ verdict }: { verdict: Verdict }) {
+  const steps = verdict.trace && verdict.trace.length ? verdict.trace : synthesizeTrace(verdict);
+  return (
+    <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <div className="mb-2 flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-slate-400">
+        <Cpu size={12} />
+        Agent resolution · four conflicting sources
+      </div>
+      <ol className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        {steps.map((s, i) => (
+          <motion.li
+            key={s.node + i}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: i * 0.06 }}
+            className="relative rounded-md border border-slate-200 bg-white p-2"
+          >
+            <div className="flex items-center gap-1.5">
+              <span className={`h-2 w-2 shrink-0 rounded-full ${SIGNAL_DOT[s.signal]}`} />
+              <span className="text-[10px] font-semibold text-slate-700">{s.title}</span>
+            </div>
+            <p className="mt-1 text-[10px] leading-relaxed text-slate-500">{s.detail}</p>
+          </motion.li>
+        ))}
+      </ol>
+    </div>
   );
 }
 
@@ -142,10 +234,10 @@ function Header({ verdict, onClose }: { verdict: Verdict; onClose: () => void })
               confidence {verdict.confidence.toFixed(2)}
             </span>
           </div>
-          <p className="text-[11px] text-slate-400">{s.blurb}</p>
+          <p className="text-[11px] text-slate-500">{s.blurb}</p>
         </div>
       </div>
-      <button onClick={onClose} className="text-slate-500 hover:text-slate-300">
+      <button onClick={onClose} className="text-slate-400 hover:text-slate-700">
         <X size={16} />
       </button>
     </div>
@@ -164,16 +256,16 @@ function Column({
   footerTone?: 'ok' | 'bad' | 'warn' | 'neutral';
 }) {
   const tone = {
-    ok: 'text-emerald-300',
-    bad: 'text-red-300',
-    warn: 'text-amber-300',
-    neutral: 'text-slate-400',
+    ok: 'text-emerald-700',
+    bad: 'text-red-700',
+    warn: 'text-amber-700',
+    neutral: 'text-slate-500',
   }[footerTone];
 
   return (
-    <div className="rounded border border-slate-700 bg-slate-900/60 p-2.5">
-      <h4 className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">{title}</h4>
-      <p className="text-[11px] leading-relaxed text-slate-300">{body}</p>
+    <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5">
+      <h4 className="mb-1 text-[10px] uppercase tracking-wider text-slate-400">{title}</h4>
+      <p className="text-[11px] leading-relaxed text-slate-700">{body}</p>
       {footer && <p className={`mt-1.5 text-[10px] ${tone}`}>{footer}</p>}
     </div>
   );
@@ -188,25 +280,25 @@ function Reasoning({ verdict }: { verdict: Verdict }) {
   const isRefusal = verdict.status === 'UNDER_REVIEW';
   return (
     <div
-      className={`mt-3 rounded border p-3 ${
-        isRefusal ? 'border-amber-500/60 bg-amber-950/25' : 'border-slate-700 bg-slate-900/60'
+      className={`mt-3 rounded-lg border p-3 ${
+        isRefusal ? 'border-amber-300 bg-amber-50' : 'border-slate-200 bg-slate-50'
       }`}
     >
       {isRefusal && (
-        <div className="mb-1.5 flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-amber-400">
+        <div className="mb-1.5 flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-amber-600">
           <AlertTriangle size={12} />
           Declined to rule
         </div>
       )}
       <p
         className={`leading-relaxed ${
-          isRefusal ? 'text-sm text-amber-100' : 'text-xs text-slate-300'
+          isRefusal ? 'text-sm text-amber-900' : 'text-xs text-slate-700'
         }`}
       >
         {verdict.reasoning}
       </p>
       {verdict.actionable_request && (
-        <p className="mt-2 border-t border-amber-500/25 pt-2 text-xs text-amber-200">
+        <p className="mt-2 border-t border-amber-300/60 pt-2 text-xs text-amber-800">
           <span className="font-semibold">Required · </span>
           {verdict.actionable_request}
         </p>

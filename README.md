@@ -56,14 +56,19 @@ Drop it once keys are in `backend/.env`.
 │                   path, topological depth                       │
 │  agent.py         LangGraph StateGraph:                         │
 │                     gptzero_gate → vision → memory → arbiter    │
+│  documents.py     PDF/DOCX/TXT extraction → AI package proposal │
+│  browserbase_*    Browserbase Fetch → Toronto hotzone feed      │
 │  db.py            Postgres + pgvector  (or in-memory, default)  │
 └──────────────────────────────┬──────────────────────────────────┘
                                │ REST (see CONTRACT.md)
                                ▼
 ┌──────────────────── Next.js 15 :3000 ───────────────────────────┐
+│  <MacroHeatmap>   Browserbase macro map. Hotzone → project      │
 │  <WorkGraph>       React Flow. blueprint mode (ViewportPortal,  │
 │                    nodes at drawing pixel coords) ⟷ logical     │
 │                    mode (Dagre topological ranks)               │
+│  <Timeline>        per-ticket baseline/current schedule and     │
+│                    stage-transition ticks                       │
 │  <VerdictPanel>    4 evidence columns + verdict + confidence    │
 │  <AttributionLedger>  append-only delay attributions            │
 │  <StationView>     R3F — 5 zone meshes, state-driven materials  │
@@ -71,8 +76,13 @@ Drop it once keys are in `backend/.env`.
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Blueprint parsing runs offline, before the demo.** The live demo shows the parsed *result*,
-not the parse. Keeps the wow, removes the failure mode.
+Blueprint parsing can be shown two ways:
+
+- **Demo posture:** use `data/seed_tasks.json`, the already-reviewed station DAG.
+- **Upload posture:** upload PDF/DOCX/TXT/MD in the daily-update modal. Daily reports
+  run through the same LangGraph verifier; specs/blueprints produce proposed work
+  packages via OpenAI when `OPENAI_API_KEY` is present, otherwise via deterministic
+  extraction. Proposals do **not** mutate the live CPM graph until a planner accepts them.
 
 ## The one thing that matters
 
@@ -123,11 +133,28 @@ OPENAI_API_KEY=                  # vision + arbiter
 GOOGLE_API_KEY=                  # vision fallback
 GPTZERO_API_KEY=                 # AI-authorship detection
 BACKBOARD_API_KEY=               # historical work-package memory
+BROWSERBASE_API_KEY=             # macro construction hotzone scrape
+JENGA_DOC_MODEL=gpt-4o-mini      # optional document extraction model
 ```
 
 See `backend/AGENT_ENV.md` for what each key changes.
 
 Optional Postgres: `docker compose up -d`, then `JENGA_STORAGE=postgres`.
+
+## Browserbase setup
+
+The Browserbase skill says to use the unified `browse` CLI:
+
+```bash
+npm install -g browse
+browse skills install
+export BROWSERBASE_API_KEY="your_api_key"
+browse cloud projects list
+```
+
+If `browse cloud projects list` returns projects, `/api/hotzones` can use Browserbase
+Fetch against Toronto/Metrolinx public pages. Without a key, JENGA returns seeded Toronto
+hotzones so the macro-to-micro drilldown still works offline.
 
 ## Tests
 

@@ -1,21 +1,119 @@
-"""Zip purchase-order actions.
+"""Zip (ziphq.com) procurement actions.
 
 `detect_material_shortage` reads a contractor's report or voice transcript and
 decides whether a purchase order needs expediting.
 
-`update_purchase_order` is a deliberate mock: it mutates the in-memory copy of
-`data/seed_tasks.json` loaded at import and returns the updated PO. Nothing is
-written to disk and no Zip endpoint is called — that is by design for the demo.
+`expedite_purchase_order` is the live integration: when `ZIP_API_KEY` is set it
+calls the real Zip Procurement API (base `https://api.ziphq.com`, `Zip-Api-Key`
+header) to raise an intake request that expedites the affected material. Without
+a key — or if the call fails or times out — it degrades to the in-memory mock,
+matching JENGA's one-fallback-per-integration rule so the demo never breaks.
+
+`update_purchase_order` remains a pure in-memory mock used by the test suite.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
+import os
 import re
 
-from . import SEED, log
+import httpx
+
+from . import SEED, log, safe_call
 
 PURCHASE_ORDERS: list[dict] = SEED.get("purchase_orders", [])
+
+# --- live Zip Procurement API config ---------------------------------------
+ZIP_BASE = os.getenv("ZIP_API_BASE", "https://api.ziphq.com").rstrip("/")
+ZIP_KEY = os.getenv("ZIP_API_KEY")
+#: Path used to raise an intake/purchase request. Overridable per-tenant.
+ZIP_REQUESTS_PATH = os.getenv("ZIP_REQUESTS_PATH", "/requests")
+ZIP_PO_PATH = os.getenv("ZIP_PO_PATH", "/purchase_orders")
+
+
+def zip_live() -> bool:
+    """True when a Zip API key is configured (live integration is possible)."""
+    return bool(ZIP_KEY)
+
+
+def _headers() -> dict[str, str]:
+    return {"Zip-Api-Key": ZIP_KEY or "", "Content-Type": "application/json"}
+
+
+def _map_po(raw: dict) -> dict:
+    """Best-effort map a Zip PO payload onto JENGA's PurchaseOrder shape."""
+    return {
+        "id": str(raw.get("id") or raw.get("number") or raw.get("po_number") or "PO-?"),
+        "material": str(raw.get("description") or raw.get("title") or raw.get("name") or "material"),
+        "quantity": str(raw.get("quantity") or raw.get("line_item_count") or ""),
+        "vendor": str((raw.get("vendor") or {}).get("name") if isinstance(raw.get("vendor"), dict) else raw.get("vendor") or "vendor"),
+        "delivery_date": str(raw.get("delivery_date") or raw.get("need_by_date") or ""),
+        "status": "confirmed",
+        "linked_task": "",
+        "last_action": None,
+    }
+
+
+async def fetch_purchase_orders() -> list[dict] | None:
+    """Live-read purchase orders from Zip. Returns None when no key is set."""
+    if not ZIP_KEY:
+        return None
+
+    async def _go():
+        async with httpx.AsyncClient(timeout=5) as client:
+            res = await client.get(
+                f"{ZIP_BASE}{ZIP_PO_PATH}",
+                params={"page_size": 100},
+                headers=_headers(),
+            )
+            res.raise_for_status()
+            payload = res.json()
+            items = payload.get("data") or payload.get("purchase_orders") or payload.get("results") or []
+            return [_map_po(p) for p in items]
+
+    return await safe_call("zip.fetch_purchase_orders", _go, None)
+
+
+async def expedite_purchase_order(po_id: str, new_delivery_date: str, reason: str) -> dict:
+    """Raise a live Zip intake request to expedite `po_id`, or mock it.
+
+    Returns `{ok, live, detail}` — `live` is True only when the real Zip API
+    accepted the request. Never raises.
+    """
+    if not ZIP_KEY:
+        return {
+            "ok": True,
+            "live": False,
+            "detail": "Zip API key not set — expedite applied to local mirror only.",
+        }
+
+    async def _go():
+        async with httpx.AsyncClient(timeout=5) as client:
+            payload = {
+                "title": f"Expedite {po_id}",
+                "description": reason,
+                "requested_delivery_date": new_delivery_date,
+                "reference_id": po_id,
+            }
+            res = await client.post(
+                f"{ZIP_BASE}{ZIP_REQUESTS_PATH}", json=payload, headers=_headers()
+            )
+            res.raise_for_status()
+            body = res.json() if res.content else {}
+            req_id = body.get("id") or body.get("request_id") or "created"
+            log.warning("zip: LIVE expedite request %s for %s", req_id, po_id)
+            return {
+                "ok": True,
+                "live": True,
+                "detail": f"Zip intake request {req_id} raised to expedite {po_id}.",
+            }
+
+    return await safe_call(
+        "zip.expedite_purchase_order",
+        _go,
+        {"ok": True, "live": False, "detail": "Zip expedite call failed — local mirror updated instead."},
+    )
 
 #: Contractor vocabulary -> a token that appears in the PO's `material` field.
 _MATERIALS: list[tuple[tuple[str, ...], str]] = [

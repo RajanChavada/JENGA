@@ -66,6 +66,16 @@ class Evidence(BaseModel):
     historical: str
 
 
+class VerdictStep(BaseModel):
+    """One node in the agent's resolution trace. Surfaced in the UI so the
+    multi-source reasoning is visible, not just its conclusion (the Rox beat)."""
+
+    node: str
+    title: str
+    detail: str
+    signal: Literal["ok", "warn", "bad", "info"] = "info"
+
+
 class Verdict(BaseModel):
     task_id: str
     status: VerdictStatus
@@ -75,6 +85,8 @@ class Verdict(BaseModel):
     gptzero: GPTZero
     vision: Vision
     evidence: Evidence
+    #: Step-by-step trace of the four-node LangGraph that produced this verdict.
+    trace: list[VerdictStep] = []
 
 
 class AttributionSplit(BaseModel):
@@ -103,6 +115,49 @@ class PurchaseOrder(BaseModel):
     status: POStatus
     linked_task: str
     last_action: str | None = None
+
+
+class ParsedDocument(BaseModel):
+    filename: str
+    kind: str
+    char_count: int
+    text: str
+    preview: str
+
+
+class ProposedTask(BaseModel):
+    name: str
+    zone: Zone
+    duration_days: int
+    spec_text: str
+    depends_on: list[str]
+
+
+class ExtractedTasks(BaseModel):
+    filename: str
+    tasks: list[ProposedTask]
+    source: Literal["llm", "offline"]
+    notes: str
+
+
+class Hotzone(BaseModel):
+    id: str
+    name: str
+    lat: float
+    lng: float
+    severity: Literal["low", "medium", "high"]
+    project: str
+    source: str
+    updated_at: str
+    summary: str
+    linked_site_id: str | None = None
+
+
+class HotzoneResponse(BaseModel):
+    source: Literal["browserbase", "offline"]
+    generated_at: str
+    notes: str
+    hotzones: list[Hotzone]
 
 
 # --- request bodies ---------------------------------------------------------

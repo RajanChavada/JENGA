@@ -56,6 +56,14 @@ export interface GraphResponse {
 
 export type VerdictStatus = 'APPROVED' | 'DISPUTED' | 'UNDER_REVIEW';
 
+/** One node in the agent's resolution trace (the four-node LangGraph). */
+export interface VerdictStep {
+  node: string;
+  title: string;
+  detail: string;
+  signal: 'ok' | 'warn' | 'bad' | 'info';
+}
+
 export interface Verdict {
   task_id: string;
   status: VerdictStatus;
@@ -80,6 +88,8 @@ export interface Verdict {
     visual: string;
     historical: string;
   };
+  /** Step-by-step agent trace. Synthesized on the client when absent. */
+  trace?: VerdictStep[];
 }
 
 export interface AttributionSplit {
@@ -115,6 +125,26 @@ export interface PurchaseOrder {
   status: 'confirmed' | 'rescheduled' | 'draft' | 'escalated';
   linked_task: string;
   last_action: string | null;
+}
+
+export interface Hotzone {
+  id: string;
+  name: string;
+  lat: number;
+  lng: number;
+  severity: 'low' | 'medium' | 'high';
+  project: string;
+  source: string;
+  updated_at: string;
+  summary: string;
+  linked_site_id: string | null;
+}
+
+export interface HotzoneResponse {
+  source: 'browserbase' | 'offline';
+  generated_at: string;
+  notes: string;
+  hotzones: Hotzone[];
 }
 
 export interface VerifyBody {

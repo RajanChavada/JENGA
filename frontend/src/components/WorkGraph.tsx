@@ -86,7 +86,7 @@ function Canvas() {
         // `animated` gives the dashed flow for free — no custom edge needed.
         animated: critical,
         style: {
-          stroke: critical ? '#ef4444' : '#475569',
+          stroke: critical ? '#dc2626' : '#cbd5e1',
           strokeWidth: critical ? 2 : 1,
         },
       };
@@ -104,7 +104,7 @@ function Canvas() {
       minZoom={0.2}
       maxZoom={2}
       proOptions={{ hideAttribution: true }}
-      className="bg-[#0a1628]"
+      className="bg-slate-50"
     >
       {mode === 'blueprint' && (
         // ViewportPortal renders inside the flow's coordinate system, so the
@@ -159,13 +159,13 @@ export function WorkGraph() {
   return (
     <div className="relative h-full w-full">
       <div className="absolute left-4 top-4 z-10 flex items-center gap-3">
-        <div className="flex overflow-hidden rounded border border-slate-600 text-xs">
+        <div className="flex overflow-hidden rounded-md border border-slate-200 bg-white text-xs shadow-sm">
           {(['blueprint', 'logical'] as ViewMode[]).map((m) => (
             <button
               key={m}
               onClick={() => setMode(m)}
-              className={`px-3 py-1.5 capitalize ${
-                mode === m ? 'bg-slate-200 text-slate-900' : 'bg-slate-900/80 text-slate-300'
+              className={`px-3 py-1.5 capitalize transition-colors ${
+                mode === m ? 'bg-slate-900 text-white' : 'bg-white text-slate-500 hover:bg-slate-50'
               }`}
             >
               {m}
@@ -173,15 +173,15 @@ export function WorkGraph() {
           ))}
         </div>
 
-        <div className="rounded border border-slate-700 bg-slate-900/80 px-3 py-1.5 font-mono text-xs text-slate-300">
+        <div className="rounded-md border border-slate-200 bg-white px-3 py-1.5 font-mono text-xs text-slate-600 shadow-sm">
           {projectDuration}d
           {slipped && (
-            <span className="ml-1.5 text-red-400">+{projectDuration - baseline!}</span>
+            <span className="ml-1.5 text-red-600">+{projectDuration - baseline!}</span>
           )}
         </div>
 
         {cascading && (
-          <span className="rounded border border-amber-500/60 bg-amber-950/60 px-2 py-1 font-mono text-[10px] text-amber-300">
+          <span className="rounded-md border border-amber-300 bg-amber-50 px-2 py-1 font-mono text-[10px] text-amber-700">
             propagating…
           </span>
         )}
@@ -198,9 +198,9 @@ export function WorkGraph() {
 
 function Legend() {
   return (
-    <div className="absolute right-4 top-4 z-10 flex flex-col gap-1 rounded border border-slate-700 bg-slate-900/80 p-2">
+    <div className="absolute right-4 top-4 z-10 flex flex-col gap-1 rounded-md border border-slate-200 bg-white/90 p-2 shadow-sm backdrop-blur">
       {(Object.keys(STATE_STYLE) as (keyof typeof STATE_STYLE)[]).map((k) => (
-        <div key={k} className="flex items-center gap-2 text-[10px] text-slate-400">
+        <div key={k} className="flex items-center gap-2 text-[10px] text-slate-500">
           <span
             className="h-2 w-2 rounded-sm"
             style={{ background: STATE_STYLE[k].hex }}

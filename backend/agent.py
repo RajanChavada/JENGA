@@ -254,6 +254,76 @@ async def _decide(state: VerifyState) -> dict:
     }
 
 
+def _build_trace(state: VerifyState) -> list[dict]:
+    """Turn the finished graph state into a human-readable resolution trace.
+
+    This is the Rox beat made visible: four sources go in, and each node's read
+    is surfaced in order so the agent's multi-source reasoning under uncertainty
+    is legible — including where it declines to conclude.
+    """
+    gz = state.get("gptzero") or {}
+    vision = state.get("vision") or {}
+    hist = state.get("historical") or {}
+    verdict = state.get("verdict") or {}
+
+    ai_prob = float(gz.get("ai_probability", 0.0))
+    ai_flagged = bool(gz.get("flagged"))
+    matches = vision.get("matches_claim")
+    vis_conf = float(vision.get("confidence", 0.0))
+    insufficient = bool(vision.get("insufficient")) or matches is None
+    hist_source = hist.get("source", "local corpus")
+    hist_count = len(hist.get("packages") or [])
+    status = verdict.get("status", "UNDER_REVIEW")
+
+    if matches is True:
+        vision_detail = f"Photo is consistent with the claim ({vis_conf:.0%} confidence)."
+        vision_signal = "ok"
+    elif matches is False:
+        vision_detail = f"Photo contradicts the claim ({vis_conf:.0%} confidence)."
+        vision_signal = "bad"
+    else:
+        vision_detail = f"Image cannot establish the claim ({vis_conf:.0%} confidence) — insufficient." if insufficient else f"Inconclusive ({vis_conf:.0%})."
+        vision_signal = "warn"
+
+    return [
+        {
+            "node": "gptzero_gate",
+            "title": "1 · Authorship gate",
+            "detail": (
+                f"Report scores {ai_prob:.0%} AI-authorship — "
+                + ("flagged, cannot auto-approve on prose." if ai_flagged else "reads as first-hand.")
+            ),
+            "signal": "bad" if ai_flagged else "ok",
+        },
+        {
+            "node": "vision_analysis",
+            "title": "2 · Visual analysis",
+            "detail": vision_detail,
+            "signal": vision_signal,
+        },
+        {
+            "node": "historical_memory",
+            "title": "3 · Historical memory",
+            "detail": (
+                f"Compared against {hist_count} similar package(s) from {hist_source}."
+                if hist_count
+                else f"No close historical match ({hist_source})."
+            ),
+            "signal": "info",
+        },
+        {
+            "node": "arbiter",
+            "title": "4 · Arbiter",
+            "detail": {
+                "APPROVED": "Sources agree — approved.",
+                "DISPUTED": "Sources conflict, evidence legible — disputed.",
+                "UNDER_REVIEW": "Evidence insufficient — declined to rule, routed to a human.",
+            }.get(status, "Resolved."),
+            "signal": {"APPROVED": "ok", "DISPUTED": "bad", "UNDER_REVIEW": "warn"}.get(status, "info"),
+        },
+    ]
+
+
 # ---------------------------------------------------------------- graph
 
 _graph = StateGraph(VerifyState)
@@ -290,6 +360,7 @@ async def verify_submission(
                 }
             )
             verdict = final["verdict"]
+            verdict["trace"] = _build_trace(final)
             txn.set_tag("verdict_status", verdict["status"])
         return verdict
     except Exception as exc:  # the pipeline itself must never take the demo down
@@ -307,6 +378,14 @@ async def verify_submission(
                 f"Re-run verification for {task.get('name', task_id)}, or inspect manually at "
                 f"blueprint coordinates X:{task.get('x')} Y:{task.get('y')}."
             ),
+            "trace": [
+                {
+                    "node": "arbiter",
+                    "title": "Pipeline error",
+                    "detail": "Agent could not complete; holding the package rather than defaulting to approval.",
+                    "signal": "warn",
+                }
+            ],
             "gptzero": {"ai_probability": 0.0, "flagged": False},
             "vision": {"observation": "Vision analysis unavailable.", "matches_claim": None, "confidence": 0.0},
             "evidence": {

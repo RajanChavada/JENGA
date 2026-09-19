@@ -6,17 +6,23 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
+import browserbase_hotzones
 import cpm_engine
 import db
+import documents
 import seed as seed_module
+from integrations import zip_api
 from schemas import (
     AttributionEntry,
     DisputeRequest,
     DisputeResponse,
+    ExtractedTasks,
     GraphResponse,
+    HotzoneResponse,
+    ParsedDocument,
     PurchaseOrder,
     StateRequest,
     Task,
@@ -127,6 +133,28 @@ async def get_graph():
     return {**result, "edges": await db.edges()}
 
 
+@app.get("/api/hotzones", response_model=HotzoneResponse)
+async def get_hotzones():
+    return await browserbase_hotzones.hotzones()
+
+
+@app.post("/api/documents/parse", response_model=ParsedDocument)
+async def parse_document(file: UploadFile = File(...)):
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "empty upload")
+    return documents.parse_document(file.filename or "upload", data)
+
+
+@app.post("/api/documents/extract-tasks", response_model=ExtractedTasks)
+async def extract_tasks(file: UploadFile = File(...)):
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "empty upload")
+    parsed = documents.parse_document(file.filename or "upload", data)
+    return await documents.propose_tasks(parsed["filename"], parsed["text"])
+
+
 @app.post("/api/tasks/{task_id}/verify", response_model=Verdict)
 async def verify(task_id: str, body: VerifyRequest):
     tasks = {t["id"]: t for t in cpm_engine.compute(await _graph())["tasks"]}
@@ -196,12 +224,24 @@ async def verify(task_id: str, body: VerifyRequest):
     if action is None and not AGENT_AVAILABLE:
         action = _canned_zip_action(task_id)
     if action and action.get("po_id"):
+        new_date = action.get("new_delivery_date") or (await _po(action["po_id"]))["delivery_date"]
+        reason = action.get("reason") or "Material shortage detected in field report."
+
+        # Live Zip integration: raise a real intake request when ZIP_API_KEY is
+        # set; otherwise (or on failure) fall back to the local mirror. Either
+        # way the UI reflects the expedite.
+        try:
+            zip_result = await zip_api.expedite_purchase_order(action["po_id"], new_date, reason)
+        except Exception as exc:  # never let procurement break verify
+            print(f"[verify] zip expedite failed ({exc})")
+            zip_result = {"ok": True, "live": False, "detail": "Zip expedite errored — local mirror updated."}
+
+        note = f"{reason} · via Zip API" if zip_result.get("live") else reason
         await db.update_po(
             action["po_id"],
             status="rescheduled" if action.get("action") == "expedite" else "escalated",
-            delivery_date=action.get("new_delivery_date")
-            or (await _po(action["po_id"]))["delivery_date"],
-            last_action=action.get("reason"),
+            delivery_date=new_date,
+            last_action=note,
         )
 
     return verdict
@@ -275,6 +315,12 @@ async def get_attributions():
 @app.get("/api/purchase-orders", response_model=list[PurchaseOrder])
 async def get_purchase_orders():
     return await db.purchase_orders()
+
+
+@app.get("/api/zip/status")
+async def zip_status():
+    """Whether the live Zip Procurement API is configured. Values are never returned."""
+    return {"live": zip_api.zip_live(), "base_url": zip_api.ZIP_BASE}
 
 
 @app.post("/api/reset")

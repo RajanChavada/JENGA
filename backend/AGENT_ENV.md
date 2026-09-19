@@ -49,6 +49,14 @@ Uses `gpt-4o` with `response_format={"type": "json_object"}`.
 - **Where:** https://platform.openai.com/api-keys
 - **Absent:** the vision node tries Gemini next.
 
+Also used by `documents.py` to propose work packages from uploaded PDF/DOCX/TXT/MD specs.
+If absent, document upload falls back to deterministic extraction and marks the result
+`source: "offline"`.
+
+## `JENGA_DOC_MODEL`
+
+Optional model override for document/package extraction. Defaults to `gpt-4o-mini`.
+
 ## `GOOGLE_API_KEY`
 
 Gemini fallback for the same comparison (`gemini-2.0-flash`, JSON response mime type).
@@ -98,13 +106,55 @@ Overrides the Backboard base URL. Defaults to `https://app.backboard.io/api`.
 
 ---
 
-## Zip (purchase orders) — no key, mocked by design
+## Zip (procurement) — `ZIP_API_KEY`
 
-`backend/integrations/zip_api.py` makes **no network call**.
-`update_purchase_order()` mutates the in-memory copy of
-`data/seed_tasks.json["purchase_orders"]` loaded at import and returns the
-updated PO with `status: "rescheduled"`. The file on disk is never written, so
-repeated demo runs always start from the same state.
+Live integration with the **Zip Procurement API** (`ziphq.com`).
+
+When a material shortage is detected in a field report, `verify` calls
+`zip_api.expedite_purchase_order()`, which raises an intake request against the
+real API:
+
+```
+POST https://api.ziphq.com/requests
+Zip-Api-Key: <ZIP_API_KEY>
+{"title": "Expedite <PO>", "description": "<reason>",
+ "requested_delivery_date": "<date>", "reference_id": "<PO>"}
+```
+
+- **Where:** Zip → Company settings → Setup → API → Create API key (grant
+  Request / Approval / Vendor scopes).
+- **Absent, fails, or times out:** falls back to the in-memory PO mirror in
+  `data/seed_tasks.json["purchase_orders"]` (status → `rescheduled`), so the
+  demo always shows the expedite. `GET /api/zip/status` reports `{live: bool}`
+  without ever returning the key.
+
+### Optional overrides
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ZIP_API_BASE` | `https://api.ziphq.com` | API host (e.g. sandbox) |
+| `ZIP_REQUESTS_PATH` | `/requests` | intake/expedite endpoint |
+| `ZIP_PO_PATH` | `/purchase_orders` | live PO read endpoint |
+
+> `zip_api.update_purchase_order()` remains a pure in-memory mock, used only by
+> the test suite; the file on disk is never written, so repeated demo runs start
+> from the same state.
+
+---
+
+## `BROWSERBASE_API_KEY`
+
+Macro-level construction heatmap scraping. `/api/hotzones` uses Browserbase Fetch:
+
+```
+POST https://api.browserbase.com/v1/fetch
+X-BB-API-Key: <BROWSERBASE_API_KEY>
+{"url": "...", "allowRedirects": true}
+```
+
+- **Where:** https://browserbase.com/settings
+- **Absent or `JENGA_OFFLINE=1`:** returns seeded Toronto construction hotzones so the
+  macro map and Eglinton West drilldown still demo without network.
 
 ---
 
@@ -115,9 +165,11 @@ repeated demo runs always start from the same state.
 | `JENGA_OFFLINE` | forcing canned mode | live calls attempted |
 | `GPTZERO_API_KEY` | AI-authorship score | canned `expected.gptzero` |
 | `OPENAI_API_KEY` | vision (preferred) | tries Gemini |
+| `JENGA_DOC_MODEL` | document extraction model | `gpt-4o-mini` |
 | `GOOGLE_API_KEY` | vision (fallback) | canned `expected.vision` |
 | `JENGA_VISION_MODEL` | model override | provider default |
 | `BACKBOARD_API_KEY` | historical retrieval | local corpus |
 | `BACKBOARD_ASSISTANT_ID` | historical retrieval | local corpus |
 | `BACKBOARD_BASE_URL` | non-default host | `https://app.backboard.io/api` |
+| `BROWSERBASE_API_KEY` | live macro hotzone scraping | seeded Toronto hotzones |
 | — | Zip PO updates | always mocked, no key exists |

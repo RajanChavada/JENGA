@@ -2,6 +2,7 @@ import * as fx from './fixtures';
 import type {
   DisputeResponse,
   GraphResponse,
+  HotzoneResponse,
   PurchaseOrder,
   Task,
   Verdict,
@@ -51,6 +52,10 @@ export function fetchPurchaseOrders(): Promise<PurchaseOrder[]> {
   return call('/api/purchase-orders', undefined, fx.purchaseOrders);
 }
 
+export function fetchHotzones(): Promise<HotzoneResponse> {
+  return call('/api/hotzones', undefined, fx.hotzones);
+}
+
 export function verify(
   taskId: string,
   submissionId: string,
@@ -84,5 +89,70 @@ export function dispute(
       body: JSON.stringify({ delay_days: delayDays, reason }),
     },
     () => fx.dispute(tasks, taskId, delayDays),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Document upload
+//
+// These deliberately bypass `call()`: it forces `content-type: application/json`,
+// and setting any content-type on a multipart request stops the browser emitting
+// the boundary, so FastAPI rejects the body.
+// ---------------------------------------------------------------------------
+
+export interface ParsedDoc {
+  filename: string;
+  kind: string;
+  char_count: number;
+  text: string;
+  preview: string;
+}
+
+export interface ProposedTask {
+  name: string;
+  zone: string;
+  duration_days: number;
+  spec_text: string;
+  depends_on: string[];
+}
+
+export interface ExtractedTasks {
+  filename: string;
+  tasks: ProposedTask[];
+  source: 'llm' | 'offline';
+  notes: string;
+}
+
+async function upload<T>(path: string, file: File): Promise<T> {
+  const body = new FormData();
+  body.append('file', file);
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    body,
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(detail || `${res.status} ${res.statusText}`);
+  }
+  return (await res.json()) as T;
+}
+
+/** Extract raw text from an uploaded PDF / txt / md. */
+export function parseDocument(file: File): Promise<ParsedDoc> {
+  return upload<ParsedDoc>('/api/documents/parse', file);
+}
+
+/** Propose work packages from an uploaded spec or blueprint. Does not mutate the graph. */
+export function extractTasks(file: File): Promise<ExtractedTasks> {
+  return upload<ExtractedTasks>('/api/documents/extract-tasks', file);
+}
+
+/** Verify a task against text pulled out of an uploaded document. */
+export function verifyWithText(taskId: string, reportText: string, tasks: Task[]) {
+  return call<Verdict>(
+    `/api/tasks/${taskId}/verify`,
+    { method: 'POST', body: JSON.stringify({ report_text: reportText }) },
+    () => fx.verdictForTask(taskId, tasks),
   );
 }

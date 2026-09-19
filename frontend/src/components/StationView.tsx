@@ -2,11 +2,20 @@
 
 import { Suspense, useMemo, useRef } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, Text } from '@react-three/drei';
+import { Billboard, OrbitControls, Text } from '@react-three/drei';
 import type { Mesh, MeshStandardMaterial } from 'three';
 import { ZONE_BOXES, ZONE_LABEL, STATE_STYLE, aggregateZoneState } from '@/lib/theme';
 import { useJenga } from '@/store/useJenga';
 import type { Task, Zone } from '@/lib/types';
+
+/** Each label parked outside the footprint on a distinct side so none overlap. */
+const LABEL_OFFSET: Record<Zone, [number, number, number]> = {
+  track_bed: [-8.4, 0.9, 0],
+  south_platform: [0, 1.9, 5.4],
+  north_platform: [0, 1.9, -5.4],
+  mezzanine: [0, 5.6, 0],
+  escalator_well: [7.4, 4.2, 1.6],
+};
 
 function ZoneMesh({
   zone,
@@ -49,14 +58,23 @@ function ZoneMesh({
           opacity={style.opacity}
         />
       </mesh>
-      <Text
-        position={[0, box.size[1] / 2 + 0.45, 0]}
-        fontSize={0.34}
-        color={selected ? '#ffffff' : '#7fb3e8'}
-        anchorX="center"
-      >
-        {ZONE_LABEL[zone]}
-      </Text>
+      {/*
+        Labels sit outside the model on their own side rather than directly above
+        each box: mezzanine (y 4.85) and escalator_well (y 4.65) are almost level,
+        so top-anchored labels collide at most camera angles. Billboard keeps them
+        readable as the scene orbits.
+      */}
+      <Billboard position={LABEL_OFFSET[zone]}>
+        <Text
+          fontSize={0.42}
+          color={selected ? '#0f172a' : '#475569'}
+          anchorX="center"
+          outlineWidth={0.02}
+          outlineColor="#ffffff"
+        >
+          {ZONE_LABEL[zone]}
+        </Text>
+      </Billboard>
     </group>
   );
 }
@@ -75,15 +93,15 @@ export function StationView() {
   }, [tasks]);
 
   return (
-    <div className="relative h-full w-full bg-[#060d18]">
-      <div className="pointer-events-none absolute left-3 top-3 z-10 text-[10px] uppercase tracking-wider text-slate-500">
+    <div className="relative h-full w-full bg-slate-50">
+      <div className="pointer-events-none absolute left-3 top-3 z-10 text-[10px] uppercase tracking-wider text-slate-400">
         Digital twin · click a zone to select its work
       </div>
       {/* Zones span ~14 units; pull back far enough to frame the whole station. */}
       <Canvas camera={{ position: [22, 17, 22], fov: 40 }}>
-        <ambientLight intensity={0.55} />
+        <ambientLight intensity={0.75} />
         <directionalLight position={[10, 14, 8]} intensity={0.9} />
-        <gridHelper args={[30, 30, '#1e3a5f', '#132742']} position={[0, -0.6, 0]} />
+        <gridHelper args={[30, 30, '#cbd5e1', '#e2e8f0']} position={[0, -0.6, 0]} />
         {/*
           drei's <Text> suspends while its font loads. Without a boundary that
           suspension unmounts the whole scene and the canvas renders empty, so the

@@ -6,6 +6,7 @@ import type {
   DisputeResponse,
   GraphEdge,
   GraphResponse,
+  HotzoneResponse,
   PurchaseOrder,
   Submission,
   Task,
@@ -89,6 +90,94 @@ export function graph(): GraphResponse {
 
 export function purchaseOrders(): PurchaseOrder[] {
   return (seed.purchase_orders ?? []) as PurchaseOrder[];
+}
+
+export function hotzones(): HotzoneResponse {
+  const generated_at = new Date().toISOString();
+  return {
+    source: 'offline',
+    generated_at,
+    notes: 'Offline demo seed. Set BROWSERBASE_API_KEY to scrape Toronto/Metrolinx sources with Browserbase Fetch.',
+    hotzones: [
+      {
+        id: 'eglinton-west',
+        name: 'Eglinton West Station',
+        lat: 43.6902,
+        lng: -79.4353,
+        severity: 'high',
+        project: 'Eglinton Crosstown West Extension',
+        source: 'offline demo seed',
+        updated_at: generated_at,
+        summary:
+          'Station box and guideway tie-in. Multimodal audit triggered. Critical path slip on south platform pour.',
+        linked_site_id: 'eglinton-west-station',
+      },
+      {
+        id: 'dufferin-eglinton',
+        name: 'Dufferin & Eglinton',
+        lat: 43.6981,
+        lng: -79.4462,
+        severity: 'medium',
+        project: 'Eglinton Crosstown West Extension',
+        source: 'offline demo seed',
+        updated_at: generated_at,
+        summary: 'Lane restrictions and structural slab pour. Utility coordination with Toronto Hydro in progress.',
+        linked_site_id: null,
+      },
+      {
+        id: 'mount-dennis',
+        name: 'Mount Dennis Portal',
+        lat: 43.6825,
+        lng: -79.4901,
+        severity: 'medium',
+        project: 'Eglinton Crosstown West Extension',
+        source: 'offline demo seed',
+        updated_at: generated_at,
+        summary:
+          'Critical path slip on guideway wiring. Contractor claims 90% complete but visual inspection pending.',
+        linked_site_id: null,
+      },
+      {
+        id: 'yonge-queen',
+        name: 'Queen & Yonge',
+        lat: 43.6524,
+        lng: -79.3792,
+        severity: 'low',
+        project: 'Downtown utility renewal',
+        source: 'offline demo seed',
+        updated_at: generated_at,
+        summary:
+          'Short-duration closures and utility coordination in a dense pedestrian corridor.',
+        linked_site_id: null,
+      },
+      {
+        id: 'finch-west',
+        name: 'Finch West LRT \u2013 Humber College',
+        lat: 43.7285,
+        lng: -79.6073,
+        severity: 'medium',
+        project: 'Finch West LRT',
+        source: 'offline demo seed',
+        updated_at: generated_at,
+        summary:
+          'Guideway paving near Humber College terminal. Track alignment verification in progress.',
+        linked_site_id: null,
+      },
+      {
+        id: 'scarborough-srt',
+        name: 'Scarborough Subway Extension',
+        lat: 43.7735,
+        lng: -79.258,
+        severity: 'high',
+        project: 'Scarborough Subway Extension',
+        source: 'offline demo seed',
+        updated_at: generated_at,
+        summary:
+          'Tunnel boring machine staging area. Deep excavation permit under review.',
+        linked_site_id: null,
+      },
+    ],
+  };
 }
 
 /** The historical-evidence column the contract requires but the fixture lacks. */
@@ -247,3 +336,32 @@ export const CASCADE_DEMO = evidence.cascade_demo as unknown as {
   reason: string;
   expected_attribution?: { attribution?: AttributionEntry['attribution'] };
 };
+
+/**
+ * Fallback verdict keyed by task rather than by submission, for the upload path
+ * where the user brought their own document instead of picking a demo case.
+ */
+export function verdictForTask(taskId: string, tasks?: Task[]): Verdict {
+  const sub = RAW.find((s) => s.task_id === taskId);
+  if (sub) return verdictFor(sub.id, tasks);
+
+  const task = tasks?.find((t) => t.id === taskId);
+  return {
+    task_id: taskId,
+    status: 'UNDER_REVIEW',
+    confidence: 0.3,
+    reasoning:
+      'Backend unreachable, so the uploaded document could not be evaluated against the specification. No verdict is asserted.',
+    actionable_request: task
+      ? `Re-run verification for ${taskId} at blueprint coordinates X:${task.x} Y:${task.y} once the verification service is reachable.`
+      : `Re-run verification for ${taskId} once the verification service is reachable.`,
+    gptzero: { ai_probability: 0, flagged: false },
+    vision: { observation: 'No analysis performed.', matches_claim: null, confidence: 0 },
+    evidence: {
+      spec: task?.spec_text ?? '—',
+      claim: 'Uploaded document.',
+      visual: 'No analysis performed.',
+      historical: 'Unavailable offline.',
+    },
+  };
+}
