@@ -125,6 +125,11 @@ async def analyse_image(image_base64: str | None, spec_text: str, claim: str, ta
     )
 
     if not image_base64:
+        # Offline demo mode: the canned vision result for this task stands in for the photo,
+        # so the scripted reasoning (e.g. P-107's shadow occlusion) still reaches the UI before
+        # the demo images exist. Only in offline mode — online, a missing photo is a real gap.
+        if os.getenv("JENGA_OFFLINE") == "1" and canned.get("vision"):
+            return fallback
         # No photo at all is the most insufficient evidence there is.
         return {
             "observation": "No photographic evidence was attached to this submission, so no visual verification of the specified work was possible.",

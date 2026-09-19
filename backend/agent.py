@@ -17,19 +17,15 @@ Two rules govern the arbiter, in this order:
 
 from __future__ import annotations
 
-import logging
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from integrations import expected_for
+from integrations import emit, expected_for, span, transaction
 from integrations.gptzero import FLAG_THRESHOLD, score_text
 from integrations.memory import retrieve_similar
 from integrations.vision import CONFIDENCE_THRESHOLD, analyse_image
 from integrations.zip_api import detect_material_shortage  # noqa: F401  (re-exported)
-
-log = logging.getLogger("jenga.agent")
-
 
 class VerifyState(TypedDict, total=False):
     task: dict
@@ -49,29 +45,95 @@ class VerifyState(TypedDict, total=False):
 async def gptzero_gate(state: VerifyState) -> dict:
     """Score the written report for AI authorship. Runs first, by contract."""
     task_id = state["task"].get("id", "")
-    return {"gptzero": await score_text(state.get("report_text"), task_id)}
+    with span("gptzero_gate", task_id=task_id, has_report=bool(state.get("report_text"))) as s:
+        result = await score_text(state.get("report_text"), task_id)
+        s.set_data("ai_probability", result.get("ai_probability"))
+        s.set_data("flagged", result.get("flagged"))
+        emit(
+            "info",
+            "gptzero_gate scored report",
+            task_id=task_id,
+            ai_probability=result.get("ai_probability"),
+            flagged=bool(result.get("flagged")),
+            threshold=FLAG_THRESHOLD,
+        )
+    return {"gptzero": result}
 
 
 async def vision_analysis(state: VerifyState) -> dict:
     """Compare the photograph against the spec and the contractor's claim."""
     task = state["task"]
-    return {
-        "vision": await analyse_image(
+    task_id = task.get("id", "")
+    with span("vision_analysis", task_id=task_id, has_image=bool(state.get("image_base64"))) as s:
+        result = await analyse_image(
             state.get("image_base64"),
             task.get("spec_text", ""),
             state.get("claim", ""),
-            task.get("id", ""),
+            task_id,
         )
-    }
+        s.set_data("confidence", result.get("confidence"))
+        s.set_data("matches_claim", result.get("matches_claim"))
+        s.set_data("insufficient", result.get("insufficient"))
+        emit(
+            "info",
+            "vision_analysis compared image against spec",
+            task_id=task_id,
+            confidence=result.get("confidence"),
+            matches_claim=result.get("matches_claim"),
+            insufficient=bool(result.get("insufficient")),
+            threshold=CONFIDENCE_THRESHOLD,
+        )
+    return {"vision": result}
 
 
 async def historical_memory(state: VerifyState) -> dict:
     """Retrieve comparable past work packages and their slip statistics."""
-    return {"historical": await retrieve_similar(state["task"])}
+    task_id = state["task"].get("id", "")
+    with span("historical_memory", task_id=task_id) as s:
+        result = await retrieve_similar(state["task"])
+        s.set_data("source", result.get("source"))
+        s.set_data("package_count", len(result.get("packages") or []))
+        emit(
+            "info",
+            "historical_memory retrieved comparable packages",
+            task_id=task_id,
+            source=result.get("source"),
+            package_count=len(result.get("packages") or []),
+        )
+    return {"historical": result}
 
 
 async def arbiter(state: VerifyState) -> dict:
     """Resolve across all three sources and emit the final Verdict."""
+    task_id = state["task"].get("id", "")
+    with span("arbiter", task_id=task_id) as s:
+        result = await _decide(state)
+        verdict = result["verdict"]
+        # Which rule fired is recoverable from the verdict itself: only the AI
+        # gate produces a hold with `flagged` set.
+        if verdict["status"] == "UNDER_REVIEW":
+            branch = "ai_gate" if verdict["gptzero"]["flagged"] else "ambiguity_rule"
+        elif verdict["status"] == "DISPUTED":
+            branch = "contradiction"
+        else:
+            branch = "approved"
+        s.set_data("branch", branch)
+        s.set_data("status", verdict["status"])
+        s.set_data("confidence", verdict["confidence"])
+        emit(
+            "info",
+            "arbiter resolved verdict",
+            task_id=task_id,
+            branch=branch,
+            status=verdict["status"],
+            confidence=verdict["confidence"],
+            actionable=bool(verdict["actionable_request"]),
+        )
+    return result
+
+
+async def _decide(state: VerifyState) -> dict:
+    """Pure decision logic. Kept separate so `arbiter` stays a thin traced shell."""
     task = state["task"]
     task_id = task.get("id", "")
     gz = state.get("gptzero") or {"ai_probability": 0.0, "flagged": False}
@@ -215,20 +277,23 @@ async def verify_submission(
 ) -> dict[str, Any]:
     """Run the verification pipeline. Returns a Verdict dict. Never raises."""
     claim = " ".join(p.strip() for p in (report_text, transcript) if p and p.strip())
+    task_id = task.get("id", "")
     try:
-        final = await GRAPH.ainvoke(
-            {
-                "task": task,
-                "report_text": report_text,
-                "image_base64": image_base64,
-                "transcript": transcript,
-                "claim": claim,
-            }
-        )
-        return final["verdict"]
+        with transaction(f"verify {task_id}", task_id=task_id, zone=task.get("zone", "")) as txn:
+            final = await GRAPH.ainvoke(
+                {
+                    "task": task,
+                    "report_text": report_text,
+                    "image_base64": image_base64,
+                    "transcript": transcript,
+                    "claim": claim,
+                }
+            )
+            verdict = final["verdict"]
+            txn.set_tag("verdict_status", verdict["status"])
+        return verdict
     except Exception as exc:  # the pipeline itself must never take the demo down
-        log.warning("verify_submission: pipeline failed (%s), returning review hold", exc)
-        task_id = task.get("id", "")
+        emit("warning", "verify_submission pipeline failed", task_id=task_id, error=str(exc))
         return {
             "task_id": task_id,
             "status": "UNDER_REVIEW",
