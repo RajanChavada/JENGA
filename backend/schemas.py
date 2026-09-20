@@ -61,6 +61,9 @@ class Vision(BaseModel):
     # null  = image cannot establish anything -> UNDER_REVIEW
     matches_claim: bool | None = None
     confidence: float = 0.0
+    #: Which medium was actually reviewed. Absent (None) only on the
+    #: pipeline-error path of an older verdict predating this field.
+    media_type: Literal["photo", "video"] | None = None
 
 
 class Evidence(BaseModel):
@@ -165,6 +168,15 @@ class PurchaseOrder(BaseModel):
     last_action: str | None = None
 
 
+class VideoEvidenceResponse(BaseModel):
+    """What POST /api/tasks/{id}/video-evidence returns: the clip's playback
+    URL and the Gemini finding, both meant to ride along into the following
+    /verify call (see VerifyRequest.video_finding/media_url)."""
+
+    media_url: str
+    finding: dict
+
+
 class ParsedDocument(BaseModel):
     filename: str
     kind: str
@@ -218,6 +230,13 @@ class VerifyRequest(BaseModel):
     report_text: str | None = None
     image_base64: str | None = None
     transcript: str | None = None
+    #: Set only when a video was attached: the already-computed result of
+    #: POST /api/tasks/{id}/video-evidence (same shape `analyse_image`
+    #: returns), so verification doesn't re-run Gemini against the footage a
+    #: second time. `media_url` is that video's playback URL, carried through
+    #: to the stored report so the owner's review can play it back.
+    video_finding: dict | None = None
+    media_url: str | None = None
 
 
 class DisputeRequest(BaseModel):
@@ -288,6 +307,9 @@ class Report(BaseModel):
     task_id: str
     project_id: str
     report_text: str
+    #: Playback URL for an attached video, when one was submitted. A photo's
+    #: base64 payload never appears here — this is a reference, not a payload.
+    media_url: str | None = None
     # The AI's recommendation. Withheld (None) from the contractor's view.
     verdict: dict | None = None
     owner_decision: OwnerDecision

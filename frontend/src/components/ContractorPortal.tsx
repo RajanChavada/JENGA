@@ -6,6 +6,7 @@ import { STATE_STYLE } from "@/lib/theme";
 import type { PortalProject, Report, Task } from "@/lib/types";
 import { useJenga } from "@/store/useJenga";
 import { DocumentUpload } from "./DocumentUpload";
+import * as api from "@/lib/api";
 
 /**
  * The construction company's view: its projects grouped by the owner it works
@@ -216,16 +217,26 @@ function TaskRow({
 
 function UpdateForm({ task, onDone }: { task: Task; onDone: () => void }) {
   const submitUpdate = useJenga((s) => s.submitUpdate);
+  const logActivity = useJenga((s) => s.logActivity);
+  const updateActivity = useJenga((s) => s.updateActivity);
   const busy = useJenga((s) => s.busy);
   const [text, setText] = useState("");
   const [image, setImage] = useState<{ name: string; base64: string } | null>(
     null,
   );
+  const [video, setVideo] = useState<File | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  function pickPhoto(file: File | undefined) {
+  function pickMedia(file: File | undefined) {
     if (!file) return;
+    if (file.type.startsWith("video/")) {
+      setVideo(file);
+      setImage(null);
+      return;
+    }
+    setVideo(null);
     const reader = new FileReader();
     reader.onload = () => {
       // readAsDataURL yields "data:image/jpeg;base64,<payload>"; the API wants the payload.
@@ -240,10 +251,41 @@ function UpdateForm({ task, onDone }: { task: Task; onDone: () => void }) {
       setError("Describe the work completed.");
       return;
     }
+    if (video) {
+      setAnalyzing(true);
+      const ev = logActivity({
+        source: "agent",
+        status: "running",
+        title: `Analyzing video for ${displayId(task.id)}`,
+        detail: "Gemini is reviewing the clip against the spec — this can take a minute.",
+      });
+      let evidence;
+      try {
+        evidence = await api.uploadVideoEvidence(task.id, video, text);
+      } catch (err) {
+        setAnalyzing(false);
+        const message = err instanceof Error ? err.message : "Video analysis failed.";
+        updateActivity(ev, { status: "error", title: "Video analysis failed", detail: message });
+        setError(message);
+        return;
+      }
+      updateActivity(ev, {
+        status: "ok",
+        title: `Video analyzed for ${displayId(task.id)}`,
+        detail: "Finding attached to the update for the owner's review.",
+      });
+      setAnalyzing(false);
+      const err = await submitUpdate(task.id, text, null, evidence.finding, evidence.media_url);
+      if (err) setError(err);
+      else onDone();
+      return;
+    }
     const err = await submitUpdate(task.id, text, image?.base64 ?? null);
     if (err) setError(err);
     else onDone();
   }
+
+  const sending = busy || analyzing;
 
   return (
     <div className="mt-3 space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
@@ -262,25 +304,29 @@ function UpdateForm({ task, onDone }: { task: Task; onDone: () => void }) {
         <input
           ref={fileRef}
           type="file"
-          accept="image/*"
+          accept="image/*,video/*"
           hidden
-          onChange={(e) => pickPhoto(e.target.files?.[0])}
+          onChange={(e) => pickMedia(e.target.files?.[0])}
         />
         <button
           onClick={() => fileRef.current?.click()}
           className="rounded-md border border-slate-200 bg-white px-2 py-1 hover:bg-slate-50"
         >
-          {image ? "Change photo" : "Add site photo"}
+          {image ? "Change photo" : video ? "Change video" : "Add site photo or video"}
         </button>
         {image && <span className="truncate">{image.name}</span>}
+        {video && <span className="truncate">{video.name}</span>}
       </div>
+      {analyzing && (
+        <p className="text-[11px] text-slate-500">Analyzing video… this can take up to a minute.</p>
+      )}
       {error && <p className="text-[11px] text-red-600">{error}</p>}
       <button
         onClick={() => void send()}
-        disabled={busy}
+        disabled={sending}
         className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50"
       >
-        {busy ? "Submitting…" : "Send to owner"}
+        {analyzing ? "Analyzing video…" : sending ? "Submitting…" : "Send to owner"}
       </button>
     </div>
   );

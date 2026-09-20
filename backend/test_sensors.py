@@ -153,7 +153,7 @@ async def main() -> None:
     import main
     from schemas import VerifyRequest
 
-    async def stub_agent(task, report_text=None, image_base64=None, transcript=None, strict=True):
+    async def stub_agent(task, report_text=None, image_base64=None, transcript=None, strict=True, video_finding=None):
         return dict(both["verdict"], task_id=task["id"])
 
     main.verify_submission = stub_agent
@@ -256,7 +256,7 @@ async def main() -> None:
     print(f"PASS  contradiction dispute on a cold ticket -> branch {other['branch']}, "
           f"card 5 credits the photo not the sensor")
 
-    async def stub_other(task, report_text=None, image_base64=None, transcript=None, strict=True):
+    async def stub_other(task, report_text=None, image_base64=None, transcript=None, strict=True, video_finding=None):
         return dict(other["verdict"], task_id=task["id"])
 
     main.verify_submission = stub_other

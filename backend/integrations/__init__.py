@@ -120,16 +120,21 @@ def emit(level: str, message: str, **fields) -> None:
             pass
 
 
-async def safe_call(label: str, make_coro, fallback):
+async def safe_call(label: str, make_coro, fallback, timeout: float = TIMEOUT):
     """Run an external call, or return `fallback`. Never raises, never hangs.
 
-    Falls back when offline mode is on, the call raises, or it exceeds TIMEOUT.
+    Falls back when offline mode is on, the call raises, or it exceeds
+    `timeout` (defaults to the house `TIMEOUT`). A caller whose external call
+    is known to run long — video analysis's upload-then-poll-then-generate
+    round trip is tens of seconds, not the sub-second calls this default was
+    sized for — passes its own `timeout` rather than this module eating a
+    slow-everywhere default for one slow integration.
     """
     if OFFLINE:
         log.warning("%s: JENGA_OFFLINE set, using canned fallback", label)
         return fallback
     try:
-        return await asyncio.wait_for(make_coro(), timeout=TIMEOUT)
+        return await asyncio.wait_for(make_coro(), timeout=timeout)
     except Exception as exc:
         log.warning("%s: call failed (%s: %s), using canned fallback", label, type(exc).__name__, exc)
         return fallback

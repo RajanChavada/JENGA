@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { X } from 'lucide-react';
 import { displayId, formatDate } from '@/lib/format';
+import { mediaUrl } from '@/lib/api';
 import type { Impact, QueueItem, VerdictStatus } from '@/lib/types';
 import { useJenga } from '@/store/useJenga';
 
@@ -179,7 +180,23 @@ function ReviewCard({ item }: { item: QueueItem }) {
           {verdict.actionable_request && (
             <p className="mt-1 text-[11px] italic text-slate-500">{verdict.actionable_request}</p>
           )}
+          {verdict.vision.observation && (
+            <p className="mt-1.5 text-[11px] leading-relaxed text-slate-600">
+              <span className="font-medium text-slate-700">
+                {verdict.vision.media_type === 'video' ? 'Video analysis: ' : 'Visual analysis: '}
+              </span>
+              {verdict.vision.observation}
+            </p>
+          )}
         </div>
+      )}
+
+      {report.media_url && (
+        <video
+          src={mediaUrl(report.media_url)}
+          controls
+          className="mt-2 max-h-48 w-full rounded border border-slate-200 bg-black"
+        />
       )}
 
       {item.impact && <DenialImpact impact={item.impact} />}

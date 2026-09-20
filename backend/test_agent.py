@@ -219,7 +219,7 @@ async def main() -> None:
     import seed as seed_module
     from schemas import DecisionRequest, VerifyRequest
 
-    async def stub_agent(task, report_text=None, image_base64=None, transcript=None, strict=True):
+    async def stub_agent(task, report_text=None, image_base64=None, transcript=None, strict=True, video_finding=None):
         """What the route-level gate exists for: an approval carrying a flagged score."""
         return {
             "task_id": task["id"],
@@ -281,7 +281,7 @@ async def main() -> None:
     assert broken["status"] == "UNDER_REVIEW", broken["status"]
     assert broken["gptzero"]["scored"] is False, broken["gptzero"]
 
-    async def stub_broken(task, report_text=None, image_base64=None, transcript=None, strict=True):
+    async def stub_broken(task, report_text=None, image_base64=None, transcript=None, strict=True, video_finding=None):
         return dict(broken)
 
     main.verify_submission = stub_broken

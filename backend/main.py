@@ -6,18 +6,21 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 import browserbase_hotzones
 import cpm_engine
 import db
 import documents
 import impact as impact_module
+import media_store
 import procurement_agent
 import seed as seed_module
 import sensors
 from integrations import tiger, zip_api
+from integrations.vision import analyse_video
 from integrations.gptzero import FLAG_THRESHOLD
 from schemas import (
     AgentProcurementRequest,
@@ -43,6 +46,7 @@ from schemas import (
     Task,
     Verdict,
     VerifyRequest,
+    VideoEvidenceResponse,
 )
 
 MOCK = json.loads(
@@ -249,6 +253,45 @@ async def extract_tasks(file: UploadFile = File(...)):
     return await documents.propose_tasks(parsed["filename"], parsed["text"])
 
 
+@app.post("/api/tasks/{task_id}/video-evidence", response_model=VideoEvidenceResponse)
+async def video_evidence(
+    task_id: str, file: UploadFile = File(...), report_text: str | None = Form(None)
+):
+    """Upload + analyze a video ahead of /verify.
+
+    Separate from /verify because the transport differs: a video is
+    multipart, same as the document endpoints above; /verify's JSON body
+    stays exactly as it was for text+photo submissions. The frontend calls
+    this first, then passes the returned `media_url`/`finding` straight into
+    the /verify call that actually creates the report — see
+    VerifyRequest.video_finding/media_url.
+    """
+    project_id = _project_of(task_id)
+    tasks = {t["id"]: t for t in await _tasks_view(project_id)}
+    task = tasks.get(task_id)
+    if task is None:
+        raise HTTPException(404, f"unknown task {task_id}")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "empty upload")
+    mime_type = file.content_type or "video/mp4"
+    media_id, path = media_store.save(data, mime_type)
+
+    finding = await analyse_video(
+        str(path), mime_type, task["spec_text"], report_text or "", seed_module.base_id(task_id)
+    )
+    return VideoEvidenceResponse(media_url=f"/api/media/{media_id}", finding=finding)
+
+
+@app.get("/api/media/{media_id}")
+async def get_media(media_id: str):
+    path = media_store.path_for(media_id)
+    if path is None:
+        raise HTTPException(404, "media not found")
+    return FileResponse(path)
+
+
 @app.post("/api/tasks/{task_id}/verify", response_model=Verdict)
 async def verify(task_id: str, body: VerifyRequest, strict: bool = True):
     """`?strict=false` demotes the GPTZero gate to an advisory; default is on."""
@@ -272,6 +315,7 @@ async def verify(task_id: str, body: VerifyRequest, strict: bool = True):
             image_base64=body.image_base64,
             transcript=body.transcript,
             strict=strict,
+            video_finding=body.video_finding,
         )
         if not verdict:
             raise ValueError("agent returned nothing")
@@ -338,6 +382,7 @@ async def verify(task_id: str, body: VerifyRequest, strict: bool = True):
             "report_text": body.report_text,
             "image_base64": body.image_base64,
             "transcript": body.transcript,
+            "media_url": body.media_url,
             "verdict": verdict,
             # What GPTZero said, recorded identically in both modes; only the
             # decision below follows the verdict. No reading at all is NULL, not

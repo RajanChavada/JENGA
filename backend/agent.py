@@ -52,6 +52,15 @@ class VerifyState(TypedDict, total=False):
     report_text: str | None
     image_base64: str | None
     transcript: str | None
+    #: Set by the route handler when a video was uploaded and analyzed ahead
+    #: of this call (see main.py's /video-evidence endpoint) — already in the
+    #: same normalised shape `analyse_image`/`analyse_video` return, so
+    #: `vision_analysis` below just passes it through rather than re-asking
+    #: Gemini a second time for footage it has already seen. `media_url`
+    #: (where that video is served back from) is deliberately not here — no
+    #: node's decision touches it, it only ever flows main.py -> db.add_evidence
+    #: -> Report, for the owner's review player.
+    video_finding: dict | None
     claim: str
     #: False demotes the AI gate from a hard override to an advisory line.
     strict: bool
@@ -151,23 +160,45 @@ async def gptzero_gate(state: VerifyState) -> dict:
 
 
 async def vision_analysis(state: VerifyState) -> dict:
-    """Compare the photograph against the spec and the contractor's claim."""
+    """Compare the submitted evidence — a video, or a photo — against the
+    spec and the contractor's claim.
+
+    A video is analyzed once, at upload time (see main.py's
+    /video-evidence endpoint), and its finding arrives pre-computed on
+    `state["video_finding"]`. When present, that finding wins outright —
+    it's already in the same normalised shape `analyse_image` returns, and
+    re-running Gemini here would be a second, redundant call against
+    footage the pipeline has already seen. Only when no video finding is
+    present does this node fall back to the (synchronous, same-request)
+    photo path.
+    """
     task = state["task"]
     task_id = task.get("id", "")
-    with span("vision_analysis", task_id=task_id, has_image=bool(state.get("image_base64"))) as s:
-        result = await analyse_image(
-            state.get("image_base64"),
-            task.get("spec_text", ""),
-            state.get("claim", ""),
-            task_id,
-        )
+    video_finding = state.get("video_finding")
+    with span(
+        "vision_analysis",
+        task_id=task_id,
+        has_image=bool(state.get("image_base64")),
+        has_video=bool(video_finding),
+    ) as s:
+        if video_finding:
+            result = video_finding
+        else:
+            result = await analyse_image(
+                state.get("image_base64"),
+                task.get("spec_text", ""),
+                state.get("claim", ""),
+                task_id,
+            )
+        s.set_data("media_type", result.get("media_type", "photo"))
         s.set_data("confidence", result.get("confidence"))
         s.set_data("matches_claim", result.get("matches_claim"))
         s.set_data("insufficient", result.get("insufficient"))
         emit(
             "info",
-            "vision_analysis compared image against spec",
+            "vision_analysis compared evidence against spec",
             task_id=task_id,
+            media_type=result.get("media_type", "photo"),
             confidence=result.get("confidence"),
             matches_claim=result.get("matches_claim"),
             insufficient=bool(result.get("insufficient")),
@@ -263,6 +294,11 @@ async def _decide(state: VerifyState) -> dict:
     observation = vision.get("observation", "No visual observation available.")
     matches = vision.get("matches_claim")
     vis_conf = float(vision.get("confidence", 0.0))
+    # Reasoning text names the medium that was actually reviewed rather than
+    # defaulting to "photograph" for a submission that was in fact a video.
+    is_video = vision.get("media_type") == "video"
+    media_noun = "video" if is_video else "photograph"
+    media_evidence_noun = "video" if is_video else "photographic evidence"
     hist_summary = hist.get("summary", "No comparable historical packages were found.")
     ai_prob = float(gz.get("ai_probability", 0.0))
     ai_flagged = bool(gz.get("flagged")) or ai_prob > FLAG_THRESHOLD
@@ -314,25 +350,26 @@ async def _decide(state: VerifyState) -> dict:
         status, branch = "UNDER_REVIEW", "ambiguity_rule"
         confidence = min(vis_conf, 0.49)
         reasoning = (
-            f"The photographic evidence does not establish the claim. {observation} "
+            f"The {media_evidence_noun} does not establish the claim. {observation} "
             f"The vision analysis returned {vis_conf:.2f} confidence, below the "
             f"{CONFIDENCE_THRESHOLD:.2f} floor required for an automated decision, so JENGA is "
             f"declining to rule rather than guessing. Approving on this evidence would mean signing "
-            f"off on {where} on the strength of an image in which the specified detail is not "
+            f"off on {where} on the strength of a {media_noun} in which the specified detail is not "
             f"actually legible — the spec calls for \"{task.get('spec_text', '')}\" and that cannot "
             f"be confirmed from what was submitted. {hist_summary} The package is held for "
-            f"re-inspection; a clear photograph is likely to resolve it in minutes."
+            f"re-inspection; a clear {media_noun} is likely to resolve it in minutes."
         )
         request = (
-            f"Re-photograph {where} at {coords} under adequate lighting, framed so the feature "
-            f"described in the specification is unobstructed and in focus, and re-submit for verification."
+            f"{'Re-record video of' if is_video else 'Re-photograph'} {where} at {coords} under "
+            f"adequate lighting, framed so the feature described in the specification is unobstructed "
+            f"and in focus, and re-submit for verification."
         )
 
     elif matches is False:
         status, branch = "DISPUTED", "contradiction"
         confidence = round(vis_conf, 2)
         reasoning = (
-            f"The photograph contradicts the submitted claim. {observation} The specification for "
+            f"The {media_noun} contradicts the submitted claim. {observation} The specification for "
             f"{where} requires \"{task.get('spec_text', '')}\", and the visible condition at {coords} "
             f"does not meet it at {vis_conf:.2f} confidence. {hist_summary} This is raised as a "
             f"dispute rather than a review hold because the evidence is legible — it simply shows "
@@ -353,7 +390,7 @@ async def _decide(state: VerifyState) -> dict:
             f"probability, well under the {FLAG_THRESHOLD:.0%} gate)"
         )
         reasoning = (
-            f"The photographic evidence supports the claim. {observation} The submitted image is "
+            f"The {media_evidence_noun} supports the claim. {observation} The submitted {media_noun} is "
             f"legible enough to rule on, returning {vis_conf:.2f} confidence against the "
             f"{CONFIDENCE_THRESHOLD:.2f} floor, and {authorship}. "
             f"The work matches the specification for {where} at {coords}. {hist_summary} "
@@ -414,6 +451,7 @@ async def _decide(state: VerifyState) -> dict:
                 "observation": observation,
                 "matches_claim": matches,
                 "confidence": round(vis_conf, 2),
+                "media_type": vision.get("media_type", "photo"),
             },
             "evidence": {
                 "spec": task.get("spec_text", ""),
@@ -452,14 +490,17 @@ def _build_trace(state: VerifyState) -> list[dict]:
     status = verdict.get("status", "UNDER_REVIEW")
     sensor_detail, sensor_signal = _sensor_card(sensor)
 
+    media_type = vision.get("media_type") or "photo"
+    media_label = "Video" if media_type == "video" else "Photo"
+
     if matches is True:
-        vision_detail = f"Photo is consistent with the claim ({vis_conf:.0%} confidence)."
+        vision_detail = f"{media_label} is consistent with the claim ({vis_conf:.0%} confidence)."
         vision_signal = "ok"
     elif matches is False:
-        vision_detail = f"Photo contradicts the claim ({vis_conf:.0%} confidence)."
+        vision_detail = f"{media_label} contradicts the claim ({vis_conf:.0%} confidence)."
         vision_signal = "bad"
     else:
-        vision_detail = f"Image cannot establish the claim ({vis_conf:.0%} confidence) — insufficient." if insufficient else f"Inconclusive ({vis_conf:.0%})."
+        vision_detail = f"{media_label} cannot establish the claim ({vis_conf:.0%} confidence) — insufficient." if insufficient else f"Inconclusive ({vis_conf:.0%})."
         vision_signal = "warn"
 
     if not ai_flagged:
@@ -479,7 +520,7 @@ def _build_trace(state: VerifyState) -> list[dict]:
         },
         {
             "node": "vision_analysis",
-            "title": "2 · Visual analysis",
+            "title": f"2 · {media_label} analysis",
             "detail": vision_detail,
             "signal": vision_signal,
         },
@@ -542,10 +583,14 @@ async def verify_submission(
     image_base64: str | None,
     transcript: str | None,
     strict: bool = True,
+    video_finding: dict | None = None,
 ) -> dict[str, Any]:
     """Run the verification pipeline. Returns a Verdict dict. Never raises.
 
     `strict=False` demotes the GPTZero gate to an advisory; see `_decide`.
+    `video_finding`, when given, is the already-computed result of analyzing
+    an uploaded video (see main.py's /video-evidence endpoint) — it takes
+    over the vision_analysis node outright rather than being re-derived here.
     """
     claim = " ".join(p.strip() for p in (report_text, transcript) if p and p.strip())
     task_id = task.get("id", "")
@@ -557,6 +602,7 @@ async def verify_submission(
                     "report_text": report_text,
                     "image_base64": image_base64,
                     "transcript": transcript,
+                    "video_finding": video_finding,
                     "claim": claim,
                     "strict": strict,
                 }
@@ -592,7 +638,7 @@ async def verify_submission(
             # GPTZero never ran here. schemas.GPTZero ignores the extra key, so
             # only the raw dict (which is what gets persisted) can see it.
             "gptzero": {"ai_probability": 0.0, "flagged": False, "scored": False},
-            "vision": {"observation": "Vision analysis unavailable.", "matches_claim": None, "confidence": 0.0},
+            "vision": {"observation": "Vision analysis unavailable.", "matches_claim": None, "confidence": 0.0, "media_type": None},
             "sensor": {"samples": 0},
             "evidence": {
                 "spec": task.get("spec_text", ""),

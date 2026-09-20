@@ -13,6 +13,7 @@ import type {
   SensorPayload,
   SensorScenario,
   Task,
+  VideoEvidenceResponse,
 } from './types';
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
@@ -23,6 +24,11 @@ let offline = FIXTURES_ONLY;
 
 export function isOffline() {
   return offline;
+}
+
+/** Resolve a backend-relative media path (e.g. `report.media_url`) to a fetchable URL. */
+export function mediaUrl(path: string): string {
+  return `${BASE}${path}`;
 }
 
 /**
@@ -338,6 +344,31 @@ export function parseDocument(file: File): Promise<ParsedDoc> {
   return upload<ParsedDoc>('/api/documents/parse', file);
 }
 
+/**
+ * Upload + analyze a video ahead of `/verify`. Gemini's Files API round trip
+ * runs 20-90s, well past `upload()`'s 30s default, so this gets its own
+ * longer timeout rather than sharing that helper.
+ */
+export async function uploadVideoEvidence(
+  taskId: string,
+  file: File,
+  reportText: string | null,
+): Promise<VideoEvidenceResponse> {
+  const body = new FormData();
+  body.append('file', file);
+  if (reportText) body.append('report_text', reportText);
+  const res = await fetch(`${BASE}/api/tasks/${encodeURIComponent(taskId)}/video-evidence`, {
+    method: 'POST',
+    body,
+    signal: AbortSignal.timeout(90000),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(detail || `${res.status} ${res.statusText}`);
+  }
+  return (await res.json()) as VideoEvidenceResponse;
+}
+
 /** Propose work packages from an uploaded spec or blueprint. Does not mutate the graph. */
 export function extractTasks(file: File): Promise<ExtractedTasks> {
   return upload<ExtractedTasks>('/api/documents/extract-tasks', file);
@@ -403,10 +434,17 @@ export async function submitReport(
   imageBase64: string | null,
   tasks: Task[],
   strict = true,
+  videoFinding: Record<string, unknown> | null = null,
+  mediaUrl: string | null = null,
 ): Promise<void> {
   await mutate(
     `/api/tasks/${encodeURIComponent(taskId)}/verify?strict=${strict}`,
-    { report_text: reportText, image_base64: imageBase64 },
+    {
+      report_text: reportText,
+      image_base64: imageBase64,
+      video_finding: videoFinding,
+      media_url: mediaUrl,
+    },
     () => {
       local.submit(projectId, taskId, reportText, fx.verdictForTask(taskId, tasks, strict));
       return null;
