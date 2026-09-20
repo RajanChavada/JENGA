@@ -1,6 +1,8 @@
 import seed from '../../../data/seed_tasks.json';
+import ossingtonSeed from '../../../data/seed_ossington.json';
 import evidence from '../../../data/mock_evidence.json';
 import { computeCpm } from './cpm';
+import { displayId } from './format';
 import type {
   AttributionEntry,
   DisputeResponse,
@@ -24,8 +26,40 @@ import type {
  * and the attribution ledger.
  */
 
-const EDGES: GraphEdge[] = seed.edges as GraphEdge[];
-type SeedTask = (typeof seed.tasks)[number];
+/**
+ * Every project's own seed, keyed by project id. A project with no entry here
+ * (Finch, or any future one) shares Eglinton's — same rule `backend/seed.py`'s
+ * `load_seed` applies from `portal.json`'s `tasks_file`.
+ */
+const SEEDS: Record<string, typeof seed> = {
+  'ossington-relief-tunnel': ossingtonSeed as unknown as typeof seed,
+};
+
+function seedFor(projectId?: string): typeof seed {
+  return (projectId && SEEDS[projectId]) || seed;
+}
+
+// Loose on purpose: two seed files, two different sets of literal `state`
+// values (Ossington's includes `disputed`/`under_review`), so this can't be
+// `typeof seed.tasks[number]` — that would infer Eglinton's narrower union
+// and reject Ossington's states as a type mismatch.
+interface SeedTask {
+  id: string;
+  name: string;
+  zone: string;
+  x: number;
+  y: number;
+  duration_days: number;
+  due_day?: number | null;
+  state: string;
+  spec_text: string;
+}
+
+/** Every seed's tasks, flattened. Ids are globally unique (`P-1xx`, `T-2xx`), so a
+ * flat lookup by id needs no project context. */
+const ALL_SEED_TASKS: SeedTask[] = [seed, ossingtonSeed].flatMap(
+  (s) => s.tasks as SeedTask[],
+);
 
 /** A Zip purchase-order adjustment triggered by a material shortage in a report. */
 export interface ZipAction {
@@ -76,22 +110,27 @@ const VISION_CONFIDENCE: Record<string, number> = {
   'SUB-03': 0.18,
   'SUB-04': 0.9,
   'SUB-05': 0.86,
+  'SUB-06': 0.85,
+  'SUB-07': 0.21,
 };
 
-function withCpm(tasks: SeedTask[]): Task[] {
-  return computeCpm(tasks, EDGES).tasks.map(
+function withCpm(tasks: SeedTask[], edges: GraphEdge[]): Task[] {
+  return computeCpm(tasks, edges).tasks.map(
     (t) => ({ ...t, zone: t.zone as Zone, state: t.state as TaskState }) as Task,
   );
 }
 
-export function graph(): GraphResponse {
-  const tasks = withCpm(seed.tasks as SeedTask[]);
-  const { critical_path, project_duration } = computeCpm(tasks, EDGES);
-  return { tasks, edges: EDGES, critical_path, project_duration };
+/** One project's graph — Eglinton's unless `projectId` names a project with its own seed. */
+export function graph(projectId?: string): GraphResponse {
+  const raw = seedFor(projectId);
+  const edges = raw.edges as GraphEdge[];
+  const tasks = withCpm(raw.tasks as SeedTask[], edges);
+  const { critical_path, project_duration } = computeCpm(tasks, edges);
+  return { tasks, edges, critical_path, project_duration };
 }
 
-export function purchaseOrders(): PurchaseOrder[] {
-  return (seed.purchase_orders ?? []) as PurchaseOrder[];
+export function purchaseOrders(projectId?: string): PurchaseOrder[] {
+  return (seedFor(projectId).purchase_orders ?? []) as PurchaseOrder[];
 }
 
 export function hotzones(): HotzoneResponse {
@@ -284,7 +323,7 @@ export function verdictFor(
   const sub = RAW.find((s) => s.id === submissionId);
   if (!sub) throw new Error(`Unknown submission ${submissionId}`);
   const e = sub.expected;
-  const seedTask = (seed.tasks as SeedTask[]).find((t) => t.id === sub.task_id);
+  const seedTask = ALL_SEED_TASKS.find((t) => t.id === sub.task_id);
   const liveTask = tasks?.find((t) => t.id === sub.task_id);
 
   const verdict: Verdict = {
@@ -335,6 +374,23 @@ export function stateForVerdict(status: VerdictStatus): TaskState {
 }
 
 /**
+ * Which project's edges a task belongs to, prefixed to match `taskId` itself —
+ * bare if `taskId` is bare (an all-offline session), or carrying whatever
+ * `project:` prefix `taskId` does (a session that started online, where every
+ * id in play, including `current`'s, is the backend's prefixed one). Mirrors
+ * `backend/seed.py`'s `scoped_id`, which prefixes the seed's edges the same way.
+ */
+function edgesFor(taskId: string): GraphEdge[] {
+  const base = displayId(taskId);
+  const prefix = taskId.slice(0, taskId.length - base.length);
+  const inOssington = (ossingtonSeed.tasks as SeedTask[]).some((t) => t.id === base);
+  const raw = (inOssington ? ossingtonSeed : seed).edges as GraphEdge[];
+  return prefix
+    ? raw.map((e) => ({ source: prefix + e.source, target: prefix + e.target }))
+    : raw;
+}
+
+/**
  * Re-run CPM with the disputed task stretched by `delay_days`, then diff against
  * the pre-dispute schedule to find who moved and by how much.
  */
@@ -352,7 +408,7 @@ export function dispute(
   const beforeDuration = Math.max(...current.map((t) => t.ef));
   const { tasks, critical_path, project_duration } = computeCpm(
     stretched,
-    EDGES,
+    edgesFor(taskId),
   );
 
   const next = tasks.map(
@@ -437,7 +493,10 @@ export function verdictForTask(
   tasks?: Task[],
   strict = true,
 ): Verdict {
-  const sub = RAW.find((s) => s.task_id === taskId);
+  // `taskId` may carry a project prefix (`ossington-relief-tunnel:T-211`) while
+  // mock_evidence.json's `task_id` never does — strip it before matching, or a
+  // session that started online and fell back mid-demo loses its canned verdict.
+  const sub = RAW.find((s) => s.task_id === displayId(taskId));
   if (sub) return verdictFor(sub.id, tasks, strict);
 
   const task = tasks?.find((t) => t.id === taskId);

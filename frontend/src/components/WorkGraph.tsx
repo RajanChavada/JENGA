@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -14,6 +14,7 @@ import dagre from 'dagre';
 import '@xyflow/react/dist/style.css';
 
 import { nodeTypes, NODE_H, NODE_W, type TaskNodeData } from './TaskNode';
+import { TaskDetail } from './TaskDetail';
 import { useJenga, type ViewMode } from '@/store/useJenga';
 import { DENIED_STYLE, STATE_STYLE } from '@/lib/theme';
 import { edgeInFocus, focusNodeIds } from '@/lib/focus';
@@ -62,6 +63,12 @@ function Canvas() {
   const focusOrigin = useJenga((s) => s.focusOrigin);
   const selectTask = useJenga((s) => s.selectTask);
   const clearFocus = useJenga((s) => s.clearFocus);
+
+  // A task detail dialog opens on a second click of the node already focused.
+  // Derived against `selectedTaskId` rather than cleared separately: unfocusing
+  // (pane click, Escape, a site switch) closes the dialog for free.
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const detail = detailId === selectedTaskId ? detailId : null;
 
   const { fitView, setViewport } = useReactFlow();
   // Which nodes are on screen. Task ids only: a state change moves nothing and
@@ -229,7 +236,9 @@ function Canvas() {
       nodes={nodes}
       edges={edges}
       nodeTypes={nodeTypes}
-      onNodeClick={(_, n) => selectTask(n.id, 'graph')}
+      onNodeClick={(_, n) =>
+        n.id === selectedTaskId ? setDetailId(n.id) : selectTask(n.id, 'graph')
+      }
       onPaneClick={() => clearFocus()}
       // Blueprint fits the whole drawing on mount; logical opens at the readable
       // zoom, set as soon as the flow initialises so there is no first-frame flash.
@@ -280,6 +289,7 @@ function Canvas() {
       )}
       <Controls className="!bottom-4 !left-4" />
     </ReactFlow>
+    <TaskDetail taskId={detail} onClose={() => setDetailId(null)} />
     </div>
   );
 }
@@ -287,11 +297,13 @@ function Canvas() {
 export function WorkGraph() {
   const mode = useJenga((s) => s.mode);
   const setMode = useJenga((s) => s.setMode);
+  const tasks = useJenga((s) => s.tasks);
   const projectDuration = useJenga((s) => s.projectDuration);
   const baseline = useJenga((s) => s.baselineDuration);
   const cascading = useJenga((s) => s.cascading);
 
   const slipped = baseline !== null && projectDuration > baseline;
+  const currentDay = tasks.filter((t) => t.state === 'verified').reduce((max, t) => Math.max(max, t.ef), 0);
 
   return (
     <div className="relative h-full w-full">
@@ -311,7 +323,7 @@ export function WorkGraph() {
         </div>
 
         <div className="rounded-md border border-slate-200 bg-white px-3 py-1.5 font-mono text-xs text-slate-600 shadow-sm">
-          {projectDuration}d
+          Day {currentDay}
           {slipped && (
             <span className="ml-1.5 text-red-600">+{projectDuration - baseline!}</span>
           )}

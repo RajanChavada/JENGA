@@ -23,8 +23,21 @@ export function RoleSwitcher() {
     void api.fetchPortal({}).then(setDirectory);
   }, []);
 
-  const parties = role === "owner" ? directory?.owners : directory?.companies;
   const current = role === "owner" ? ownerId : companyId;
+  const options =
+    role === "owner"
+      ? Array.from(
+          new Map(
+            (directory?.projects ?? []).map((project) => [project.owner.id, {
+              id: project.owner.id,
+              name: project.name,
+            }]),
+          ).values(),
+        )
+      : (directory?.companies ?? []).map((company) => ({
+          id: company.id,
+          name: company.name,
+        }));
 
   return (
     <div className="flex items-center gap-2">
@@ -54,9 +67,9 @@ export function RoleSwitcher() {
         }
         className="max-w-47.5 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700"
       >
-        {(parties ?? []).map((p) => (
-          <option key={p.id} value={p.id}>
-            {p.name}
+        {(options ?? []).map((option) => (
+          <option key={option.id} value={option.id}>
+            {option.name}
           </option>
         ))}
       </select>

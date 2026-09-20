@@ -37,7 +37,15 @@ from integrations.gptzero import FLAG_THRESHOLD  # noqa: E402
 from integrations.zip_api import PURCHASE_ORDERS, update_purchase_order  # noqa: E402
 
 EVIDENCE = json.loads((DATA_DIR / "mock_evidence.json").read_text())
-TASKS = {t["id"]: t for t in json.loads((DATA_DIR / "seed_tasks.json").read_text())["tasks"]}
+# Every seed file named by a project in portal.json, plus the default — a project
+# without its own `tasks_file` shares seed_tasks.json, same as seed.py resolves it.
+PORTAL = json.loads((DATA_DIR / "portal.json").read_text())
+SEED_FILES = {"seed_tasks.json"} | {p.get("tasks_file", "seed_tasks.json") for p in PORTAL["projects"]}
+TASKS = {
+    t["id"]: t
+    for f in SEED_FILES
+    for t in json.loads((DATA_DIR / f).read_text())["tasks"]
+}
 
 # A 1x1 pixel; stands in for a real photo so the image-present path is exercised.
 STUB_IMAGE = (

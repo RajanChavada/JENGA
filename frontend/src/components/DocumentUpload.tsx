@@ -5,7 +5,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { FileUp, Loader2, TriangleAlert, Zap } from 'lucide-react';
 import * as api from '@/lib/api';
 import type { AgentProcurementResult, ExtractedTasks, ParsedDoc } from '@/lib/api';
-import { ZONE_LABEL } from '@/lib/theme';
+import { zoneLabel } from '@/lib/theme';
 import type { Zone } from '@/lib/types';
 import { useJenga } from '@/store/useJenga';
 
@@ -46,6 +46,7 @@ export function DocumentUpload({
   const logActivity = useJenga((s) => s.logActivity);
   const updateActivity = useJenga((s) => s.updateActivity);
   const agentProcure = useJenga((s) => s.agentProcure);
+  const projectId = useJenga((s) => s.activeProjectId);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [doc, setDoc] = useState<ParsedDoc | null>(null);
@@ -361,7 +362,7 @@ export function DocumentUpload({
                         </span>
                       </div>
                       <div className="flex items-center gap-2 text-[9px] text-slate-400">
-                        <span>{ZONE_LABEL[t.zone as Zone] ?? t.zone}</span>
+                        <span>{zoneLabel(t.zone as Zone, projectId) ?? t.zone}</span>
                         {t.depends_on.length > 0 && (
                           <span>after {t.depends_on.join(', ')}</span>
                         )}
