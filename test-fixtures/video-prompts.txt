@@ -1,0 +1,60 @@
+JENGA video-pipeline test prompts
+==================================
+Recommended model: Veo 3.1 (labs.google) — best realism/least setup for physical
+construction scenes, same Google account as your Gemini API key. Runway Gen-4.5
+is the alternative if you need stronger prompt adherence for a specific detail.
+
+Each scenario pairs with the matching PDF in test-fixtures/reports/. Submit the
+PDF + the generated clip together against the named ticket in the app.
+
+Reusable template
+------------------
+Realistic construction site footage, [DURATION] seconds, [CAMERA: static tripod /
+handheld walking] shot: [SPECIFIC, VERIFIABLE ACTIVITY — describe exactly what's
+done vs. not done], [LIGHTING], no on-screen text, no dialogue unless testing
+audio claims.
+
+
+SCENARIO A — Supported
+Ticket: Segment A Paving (km 0-1)
+Report: scenario-a-supported.pdf
+Expected result: claimChecks -> supported; no proposals.
+
+Prompt:
+Realistic construction site footage, 20 seconds, static tripod shot: an asphalt
+paver machine laying fresh hot-mix asphalt across the full width of both lanes
+of a rural road, a roller compactor following behind, orange traffic cones
+along the shoulder, overcast midday lighting, no dialogue, no on-screen text.
+
+
+SCENARIO B — Contradicted
+Ticket: Segment A Paving (km 0-1)
+Report: scenario-b-contradicted.pdf (same text as A, on purpose)
+Expected result: claimChecks -> contradicted ("second lane still gravel"),
+a fork proposal (this ticket feeds Line Painting & Signage).
+
+Prompt:
+Realistic construction site footage, 20 seconds, static tripod shot: only the
+near lane of a two-lane rural road has fresh asphalt; the far lane is still
+exposed gravel subgrade with wooden survey stakes, an idle paver machine parked
+at the edge, overcast midday lighting, no dialogue, no on-screen text.
+
+
+SCENARIO C — Unexpected finding
+Ticket: Height Clearance & Grading
+Report: scenario-c-unexpected.pdf
+Expected result: an "unexpected" entry ("standing water, no ticket covers
+this") -> a new-ticket proposal.
+
+Prompt:
+Realistic construction site footage, 20 seconds, handheld walking shot: a
+grading crew leveling subgrade with an excavator; standing water is visibly
+pooled in a low section of the graded area with muddy ruts nearby, overcast
+lighting, ambient equipment noise, no dialogue.
+
+
+SCENARIO D — not_visible sanity check
+Ticket: Truck Logistics Scheduling
+Report: scenario-d-not-visible.pdf
+Expected result: ticketFindings -> not_visible; no proposals.
+No prompt needed — any unrelated clip works (e.g. footage of your desk).

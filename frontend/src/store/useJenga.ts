@@ -233,7 +233,13 @@ interface JengaState {
   refreshPortal: () => Promise<void>;
   focusProject: (project: PortalProject) => Promise<void>;
   /** Each returns the refusal message, or null on success. */
-  submitUpdate: (taskId: string, text: string, imageBase64: string | null) => Promise<string | null>;
+  submitUpdate: (
+    taskId: string,
+    text: string,
+    imageBase64: string | null,
+    videoFinding?: Record<string, unknown> | null,
+    mediaUrl?: string | null,
+  ) => Promise<string | null>;
   decide: (reportId: string, decision: 'approve' | 'deny', note: string) => Promise<string | null>;
   runDispute: (taskId: string, delayDays: number, reason: string) => Promise<void>;
   /** Procurement actions on a PO. Each hits the backend and mirrors the result. */
@@ -682,7 +688,7 @@ export const useJenga = create<JengaState>((set, get) => ({
     await refreshSite(project.id);
   },
 
-  async submitUpdate(taskId, text, imageBase64) {
+  async submitUpdate(taskId, text, imageBase64, videoFinding = null, mediaUrl = null) {
     const site = get().activeProjectId;
     if (!site) return 'No project selected.';
     set({ busy: true });
@@ -693,7 +699,16 @@ export const useJenga = create<JengaState>((set, get) => ({
       detail: 'GPTZero authorship → vision → historical memory → telemetry → arbiter',
     });
     try {
-      await api.submitReport(site, taskId, text, imageBase64, get().tasks, get().strict);
+      await api.submitReport(
+        site,
+        taskId,
+        text,
+        imageBase64,
+        get().tasks,
+        get().strict,
+        videoFinding,
+        mediaUrl,
+      );
     } catch (err) {
       set({ busy: false });
       const message = err instanceof Error ? err.message : 'Submission failed.';

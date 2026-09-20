@@ -169,6 +169,8 @@ export interface Verdict {
     matches_claim: boolean | null;
     /** Vision's own confidence, 0..1. Distinct from the top-level verdict confidence. */
     confidence: number;
+    /** Which medium was actually reviewed. Absent only on an older pipeline-error verdict. */
+    media_type?: 'photo' | 'video' | null;
   };
   evidence: {
     spec: string;
@@ -244,6 +246,16 @@ export interface VerifyBody {
   report_text: string | null;
   image_base64?: string | null;
   transcript?: string | null;
+  /** Set only when a video was attached: the finding POST /video-evidence already computed. */
+  video_finding?: Record<string, unknown> | null;
+  /** That video's playback URL, carried through so the stored report can play it back. */
+  media_url?: string | null;
+}
+
+/** What POST /api/tasks/{id}/video-evidence returns. */
+export interface VideoEvidenceResponse {
+  media_url: string;
+  finding: Record<string, unknown>;
 }
 
 /** A canned demo submission out of data/mock_evidence.json. */
@@ -353,6 +365,8 @@ export interface Report {
   task_id: string;
   project_id: string;
   report_text: string;
+  /** Playback URL for an attached video. Null for a photo submission (or none at all). */
+  media_url?: string | null;
   /** The AI's recommendation. Null in the contractor's view: it never sees it. */
   verdict: Verdict | null;
   owner_decision: OwnerDecision;

@@ -518,7 +518,10 @@ async def add_evidence(row):
                 gptzero_score=row.get("gptzero_score"),
                 gptzero_flag=row.get("gptzero_flag"),
                 owner_decision=row.get("owner_decision"),
-                # image_base64/transcript are payloads, not URLs — media_url stays empty
+                # image_base64/transcript are payloads and never land here; a
+                # video's media_url is a reference, not a payload, so unlike
+                # those two it is written straight through.
+                media_url=row.get("media_url"),
                 submitted_at=_dt(row.get("created_at"), naive=True),
             )
         )
@@ -537,12 +540,15 @@ async def add_evidence(row):
 
 
 def _report_shape(r):
-    """Public shape of a report; the image payload stays server-side."""
+    """Public shape of a report; the image/video payload stays server-side —
+    `media_url` is a reference to it, not the payload itself, so unlike
+    `image_base64` it's safe (and the point) to return."""
     return {
         "id": r["id"],
         "task_id": r["task_id"],
         "project_id": r["project_id"],
         "report_text": r.get("report_text") or "",
+        "media_url": r.get("media_url"),
         "verdict": r.get("verdict"),
         "owner_decision": r.get("owner_decision") or "pending",
         "owner_note": r.get("owner_note"),

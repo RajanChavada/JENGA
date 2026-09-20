@@ -43,11 +43,13 @@ AI-authorship scoring for the written report.
 
 ## `OPENAI_API_KEY`
 
-Multimodal image-vs-spec comparison. Preferred over Gemini when both are set.
+Multimodal image-vs-spec comparison for **photo** evidence only — there is no
+OpenAI video path. Used only when `GOOGLE_API_KEY` is absent (see below).
 Uses `gpt-4o` with `response_format={"type": "json_object"}`.
 
 - **Where:** https://platform.openai.com/api-keys
-- **Absent:** the vision node tries Gemini next.
+- **Absent, and no Gemini key either:** vision falls back to the canned
+  `expected.vision` block plus `expected.confidence`.
 
 Also used by `documents.py` to propose work packages from uploaded PDF/DOCX/TXT/MD specs.
 If absent, document upload falls back to deterministic extraction and marks the result
@@ -59,11 +61,14 @@ Optional model override for document/package extraction. Defaults to `gpt-4o-min
 
 ## `GOOGLE_API_KEY`
 
-Gemini fallback for the same comparison (`gemini-2.0-flash`, JSON response mime type).
+Gemini, preferred over OpenAI when both are set (`gemini-2.0-flash` for
+photos, JSON response mime type) — the only provider for **video** evidence,
+via the Files API (`POST /api/tasks/{id}/video-evidence`).
 
 - **Where:** https://aistudio.google.com/apikey
-- **Absent (and no OpenAI key):** vision falls back to the canned
-  `expected.vision` block plus `expected.confidence`.
+- **Absent:** photo evidence tries OpenAI next; video evidence has no
+  fallback provider and goes straight to the canned finding (see
+  `JENGA_VIDEO_MODEL` below).
 
 ## `JENGA_VISION_MODEL`
 
@@ -73,6 +78,18 @@ Defaults to `gpt-4o` (OpenAI) or `gemini-2.0-flash` (Gemini).
 > If **no** image is supplied at all, no provider is called: the vision node
 > returns `insufficient: true` at confidence `0.0`, and the arbiter holds the
 > package for re-inspection. That is the intended behaviour, not a failure.
+
+## `JENGA_VIDEO_MODEL`
+
+Overrides the model id used for video evidence (`POST
+/api/tasks/{id}/video-evidence`). Defaults to `gemini-flash-latest`. Video is
+Gemini-only — there is no OpenAI fallback path for it — so this only takes
+effect when `GOOGLE_API_KEY` is set.
+
+- **Absent `GOOGLE_API_KEY`:** the endpoint still saves the upload and
+  returns the same canned fixture finding the photo path falls back to,
+  rather than failing the submission; the clip is still there for the owner
+  to watch even without a real analysis.
 
 ---
 
@@ -175,10 +192,11 @@ X-BB-API-Key: <BROWSERBASE_API_KEY>
 |---|---|---|
 | `JENGA_OFFLINE` | forcing canned mode | live calls attempted |
 | `GPTZERO_API_KEY` | AI-authorship score | canned `expected.gptzero` |
-| `OPENAI_API_KEY` | vision (preferred) | tries Gemini |
+| `GOOGLE_API_KEY` | vision + video (preferred) | tries OpenAI, photo only |
 | `JENGA_DOC_MODEL` | document extraction model | `gpt-4o-mini` |
-| `GOOGLE_API_KEY` | vision (fallback) | canned `expected.vision` |
-| `JENGA_VISION_MODEL` | model override | provider default |
+| `OPENAI_API_KEY` | vision fallback (photo only; no video path) | canned `expected.vision` |
+| `JENGA_VISION_MODEL` | photo model override | provider default |
+| `JENGA_VIDEO_MODEL` | video model override | `gemini-flash-latest` |
 | `BACKBOARD_API_KEY` | historical retrieval | local corpus |
 | `BACKBOARD_ASSISTANT_ID` | historical retrieval | local corpus |
 | `BACKBOARD_BASE_URL` | non-default host | `https://app.backboard.io/api` |

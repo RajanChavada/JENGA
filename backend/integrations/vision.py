@@ -1,22 +1,36 @@
-"""Multimodal comparison of site photo evidence against the blueprint spec.
+"""Multimodal comparison of site evidence — a photo or a video — against the
+blueprint spec.
 
-OpenAI is preferred; Gemini is used when only `GOOGLE_API_KEY` is present.
-Both are asked for JSON, not prose.
+Gemini is preferred for both media types; OpenAI is used as a fallback for
+photos only when `GOOGLE_API_KEY` is absent (its chat-completions API has no
+equivalent to Gemini's Files API for video, so video is Gemini-only). Both
+photo and video paths ask for JSON, not prose, and are normalised through the
+same `_normalise()` so the arbiter and `impact.py` never need to know which
+media type produced a given result.
 
-The prompt is the point of this file. A model that guesses "looks compliant" at
-a black photograph is worse than useless on a construction site, so the prompt
-makes declining an explicitly correct answer and puts a number on it.
+The prompt is the point of this file. A model that guesses "looks compliant"
+at a black photograph — or a video where the claimed work never appears on
+camera — is worse than useless on a construction site, so the prompt makes
+declining an explicitly correct answer and puts a number on it.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 
 from . import TIMEOUT, expected_for, log, safe_call
 
-#: Below this, the image did not actually establish anything.
+#: Below this, the evidence did not actually establish anything.
 CONFIDENCE_THRESHOLD = 0.5
+
+#: Video analysis is a Files-API upload, a processing poll, then a generate
+#: call — tens of seconds, not the sub-second calls TIMEOUT was sized for.
+VIDEO_TIMEOUT = 90.0
+#: How long to wait for Gemini's Files API to finish processing an upload
+#: before giving up, distinct from VIDEO_TIMEOUT (which bounds the whole call).
+_FILE_PROCESSING_TIMEOUT = 60.0
 
 PROMPT = """You are a construction QA inspector reviewing a single site photograph \
 submitted as evidence that a work package is complete.
@@ -48,6 +62,40 @@ legible in the image — not inferred from context, surroundings, or the contrac
 wording. An honest "I cannot tell from this image" is a correct and valued answer. \
 Guessing compliance from an unreadable photograph is the single worst failure you \
 can make here: it signs off on work nobody has seen."""
+
+VIDEO_PROMPT = """You are a construction QA inspector reviewing a site video \
+submitted as evidence that a work package is complete.
+
+BLUEPRINT SPECIFICATION:
+{spec_text}
+
+CONTRACTOR'S CLAIM:
+{claim}
+
+Watch the footage (audio included) and compare it against the specification and \
+the claim. Ground every observation in a timestamp — a claim you cannot point to a \
+moment for is not evidence. Respond with JSON only:
+
+{{
+  "observation": "1-3 sentences describing what is actually visible/audible, each citing a MM:SS timestamp, and if the footage cannot establish the claim, what specifically prevents it",
+  "matches_claim": true | false | null,
+  "confidence": 0.0 to 1.0,
+  "insufficient": true | false
+}}
+
+CRITICAL RULE — READ BEFORE ANSWERING:
+If the footage never actually shows the specific feature named in the specification \
+— wrong location, too dark, too brief, obstructed, or simply never pointed at the \
+relevant work — you MUST answer:
+  "insufficient": true, "matches_claim": null, "confidence": below {threshold}
+and say in the observation exactly what prevents verification.
+
+Set "confidence" above {threshold} ONLY when the spec-relevant detail is directly \
+visible or audible at a specific, cited timestamp — not inferred from context, \
+surroundings, or the contractor's wording. An honest "the footage never shows this" \
+is a correct and valued answer. Guessing compliance from footage that never actually \
+shows the claimed work is the single worst failure you can make here: it signs off \
+on work nobody has seen."""
 
 
 def _normalise(raw: dict) -> dict:
@@ -116,8 +164,45 @@ async def _gemini(prompt: str, image_base64: str) -> dict:
     return json.loads(resp.text)
 
 
+async def _gemini_video(prompt: str, video_path: str, mime_type: str) -> dict:
+    """Upload a video to Gemini's Files API, wait for it to process, then ask.
+
+    Distinct from `_gemini`'s inline-bytes approach: video routinely exceeds
+    what a single request body should carry, so the Files API (upload once,
+    reference by URI) is the only path Gemini offers for it.
+    """
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
+    file = await client.aio.files.upload(file=video_path, config={"mime_type": mime_type})
+
+    deadline = asyncio.get_event_loop().time() + _FILE_PROCESSING_TIMEOUT
+    while file.state == types.FileState.PROCESSING and asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(2)
+        file = await client.aio.files.get(name=file.name)
+    if file.state != types.FileState.ACTIVE:
+        raise RuntimeError(f"Gemini file processing did not complete (state={file.state})")
+
+    resp = await client.aio.models.generate_content(
+        model=os.getenv("JENGA_VIDEO_MODEL", "gemini-flash-latest"),
+        contents=[prompt, types.Part.from_uri(file_uri=file.uri, mime_type=file.mime_type)],
+        config={"response_mime_type": "application/json"},
+    )
+    return json.loads(resp.text)
+
+
+def _no_evidence_result(kind: str) -> dict:
+    return {
+        "observation": f"No {kind} evidence was attached to this submission, so no visual verification of the specified work was possible.",
+        "matches_claim": None,
+        "confidence": 0.0,
+        "insufficient": True,
+    }
+
+
 async def analyse_image(image_base64: str | None, spec_text: str, claim: str, task_id: str) -> dict:
-    """Compare an image against the spec. Always returns a well-formed dict."""
+    """Compare a photo against the spec. Always returns a well-formed dict."""
     canned = expected_for(task_id)
     fallback = _normalise(
         dict(canned.get("vision") or {})
@@ -129,24 +214,53 @@ async def analyse_image(image_base64: str | None, spec_text: str, claim: str, ta
         # so the scripted reasoning (e.g. P-107's shadow occlusion) still reaches the UI before
         # the demo images exist. Only in offline mode — online, a missing photo is a real gap.
         if os.getenv("JENGA_OFFLINE") == "1" and canned.get("vision"):
-            return fallback
-        # No photo at all is the most insufficient evidence there is.
-        return {
-            "observation": "No photographic evidence was attached to this submission, so no visual verification of the specified work was possible.",
-            "matches_claim": None,
-            "confidence": 0.0,
-            "insufficient": True,
-        }
+            return fallback | {"media_type": "photo"}
+        return _no_evidence_result("photographic") | {"media_type": "photo"}
 
     prompt = PROMPT.format(spec_text=spec_text, claim=claim or "(no written claim provided)", threshold=CONFIDENCE_THRESHOLD)
 
-    if os.getenv("OPENAI_API_KEY"):
-        provider, call = "openai", _openai
-    elif os.getenv("GOOGLE_API_KEY"):
+    # Gemini preferred for both media types; OpenAI is the fallback provider
+    # when only it is configured. See module docstring.
+    if os.getenv("GOOGLE_API_KEY"):
         provider, call = "gemini", _gemini
+    elif os.getenv("OPENAI_API_KEY"):
+        provider, call = "openai", _openai
     else:
-        log.warning("vision: no OPENAI_API_KEY or GOOGLE_API_KEY set, using canned fallback")
-        return fallback
+        log.warning("vision: no GOOGLE_API_KEY or OPENAI_API_KEY set, using canned fallback")
+        return fallback | {"media_type": "photo"}
 
     raw = await safe_call(f"vision[{provider}]", lambda: call(prompt, image_base64), None)
-    return fallback if raw is None else _normalise(raw)
+    result = fallback if raw is None else _normalise(raw)
+    return result | {"media_type": "photo"}
+
+
+async def analyse_video(video_path: str | None, mime_type: str, spec_text: str, claim: str, task_id: str) -> dict:
+    """Compare a video against the spec. Always returns a well-formed dict.
+
+    Gemini-only — see module docstring for why. Mirrors `analyse_image`'s
+    shape and degradation behaviour exactly, so a caller can treat the two
+    interchangeably and only the `media_type` tag on the result differs.
+    """
+    canned = expected_for(task_id)
+    fallback = _normalise(
+        dict(canned.get("vision") or {})
+        | {"confidence": canned.get("confidence", 0.0)}
+    )
+
+    if not video_path:
+        return _no_evidence_result("video") | {"media_type": "video"}
+
+    if not os.getenv("GOOGLE_API_KEY"):
+        log.warning("vision: no GOOGLE_API_KEY set, video analysis unavailable, using canned fallback")
+        return fallback | {"media_type": "video"}
+
+    prompt = VIDEO_PROMPT.format(spec_text=spec_text, claim=claim or "(no written claim provided)", threshold=CONFIDENCE_THRESHOLD)
+
+    raw = await safe_call(
+        "vision[gemini-video]",
+        lambda: _gemini_video(prompt, video_path, mime_type),
+        None,
+        timeout=VIDEO_TIMEOUT,
+    )
+    result = fallback if raw is None else _normalise(raw)
+    return result | {"media_type": "video"}
