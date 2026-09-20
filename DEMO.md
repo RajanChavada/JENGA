@@ -76,7 +76,7 @@ Report implies a completed milestone. Photo shows ~40% poured, rebar still expos
 
 Report is human. Plausible. But the drone photo is shadow-occluded.
 
-**Stop talking. Let them read the VerdictPanel.**
+**Stop talking. Let them read the review card.**
 
 > "It won't rule. Confidence 0.32. It says: rebar tie density cannot be verified to ASTM A615
 > from this exposure — request an illuminated inspection at X:340, Y:260.

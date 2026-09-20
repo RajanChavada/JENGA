@@ -127,7 +127,6 @@ function TaskRow({
 }) {
   const [open, setOpen] = useState(false);
   const style = STATE_STYLE[task.state];
-  const latest = reports[reports.length - 1];
 
   return (
     <div className="p-3">
@@ -173,20 +172,6 @@ function TaskRow({
             .join(', ')}
         </p>
       )}
-      {latest?.owner_decision === "rejected" && task.state === "active" && (
-        <p className="mt-1 rounded bg-red-50 px-2 py-1 text-[11px] text-red-700">
-          Denied{latest.owner_note ? `: ${latest.owner_note}` : "."} Resubmit
-          with the fix.
-          {latest.impact && (
-            <>
-              {" "}
-              Predicted impact: +{latest.impact.rework_days} days of rework; the
-              project finish moves to{" "}
-              {formatDate(latest.impact.predicted_finish_date)}.
-            </>
-          )}
-        </p>
-      )}
       {open && <UpdateForm task={task} onDone={() => setOpen(false)} />}
 
       {reports.length > 0 && (
@@ -205,6 +190,18 @@ function TaskRow({
               {r.owner_decision === "rejected" && (
                 <span className="text-red-700">
                   Denied{r.owner_note ? `: ${r.owner_note}` : ""}
+                  {r.impact && (
+                    <>
+                      <br />
+                      <span className="font-semibold text-red-800">
+                        +{r.impact.project_slipped_days}d delay
+                      </span>
+                      {", new finish "}
+                      <span className="font-semibold text-red-800">
+                        {formatDate(r.impact.predicted_finish_date)}
+                      </span>
+                    </>
+                  )}
                 </span>
               )}
             </li>
@@ -221,10 +218,13 @@ function UpdateForm({ task, onDone }: { task: Task; onDone: () => void }) {
   const updateActivity = useJenga((s) => s.updateActivity);
   const busy = useJenga((s) => s.busy);
   const [text, setText] = useState("");
-  const [image, setImage] = useState<{ name: string; base64: string } | null>(
+  const [image, setImage] = useState<
+    { name: string; base64: string; mime: string } | null
+  >(null);
+  const [video, setVideo] = useState<File | null>(null);
+  const [report, setReport] = useState<{ url: string | null; filename: string } | null>(
     null,
   );
-  const [video, setVideo] = useState<File | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -241,7 +241,7 @@ function UpdateForm({ task, onDone }: { task: Task; onDone: () => void }) {
     reader.onload = () => {
       // readAsDataURL yields "data:image/jpeg;base64,<payload>"; the API wants the payload.
       const url = String(reader.result);
-      setImage({ name: file.name, base64: url.slice(url.indexOf(",") + 1) });
+      setImage({ name: file.name, base64: url.slice(url.indexOf(",") + 1), mime: file.type });
     };
     reader.readAsDataURL(file);
   }
@@ -275,12 +275,21 @@ function UpdateForm({ task, onDone }: { task: Task; onDone: () => void }) {
         detail: "Finding attached to the update for the owner's review.",
       });
       setAnalyzing(false);
-      const err = await submitUpdate(task.id, text, null, evidence.finding, evidence.media_url);
+      const err = await submitUpdate(task.id, text, null, {
+        videoFinding: evidence.finding,
+        mediaUrl: evidence.media_url,
+        reportUrl: report?.url,
+        reportFilename: report?.filename,
+      });
       if (err) setError(err);
       else onDone();
       return;
     }
-    const err = await submitUpdate(task.id, text, image?.base64 ?? null);
+    const err = await submitUpdate(task.id, text, image?.base64 ?? null, {
+      imageMime: image?.mime,
+      reportUrl: report?.url,
+      reportFilename: report?.filename,
+    });
     if (err) setError(err);
     else onDone();
   }
@@ -297,7 +306,10 @@ function UpdateForm({ task, onDone }: { task: Task; onDone: () => void }) {
         className="w-full resize-none rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700 placeholder:text-slate-300"
       />
       <DocumentUpload
-        onReportText={(t) => setText((prev) => (prev ? `${prev}\n\n${t}` : t))}
+        onReportText={(t, filename, mediaUrl) => {
+          setText((prev) => (prev ? `${prev}\n\n${t}` : t));
+          setReport({ url: mediaUrl, filename });
+        }}
         reportActionLabel="Use this text"
       />
       <div className="flex items-center gap-2 text-[11px] text-slate-500">

@@ -365,8 +365,11 @@ export interface Report {
   task_id: string;
   project_id: string;
   report_text: string;
-  /** Playback URL for an attached video. Null for a photo submission (or none at all). */
+  /** Playback URL for the attached evidence (video or photo), when one was submitted. */
   media_url?: string | null;
+  /** Preview URL for the contractor's uploaded report file (PDF/DOCX/TXT), when submitted as a document. */
+  report_url?: string | null;
+  report_filename?: string | null;
   /** The AI's recommendation. Null in the contractor's view: it never sees it. */
   verdict: Verdict | null;
   owner_decision: OwnerDecision;

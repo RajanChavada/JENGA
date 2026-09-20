@@ -18,7 +18,6 @@ import type {
   SpendAnalytics,
   Task,
   TaskState,
-  Verdict, 
   Zone,
 } from '@/lib/types';
 import type { FocusOrigin } from '@/lib/focus';
@@ -157,7 +156,6 @@ interface JengaState {
    */
   strict: boolean;
 
-  verdict: Verdict | null;
   attributions: AttributionEntry[];
   purchaseOrders: PurchaseOrder[];
   hotzones: HotzoneResponse | null;
@@ -178,7 +176,6 @@ interface JengaState {
   activity: AgentEvent[];
   /** Whether the activity rail is open. */
   activityOpen: boolean;
-  sideEffect: string | null;
   /** Curing telemetry, keyed by ticket. Nothing polls it since SensorStrip was removed. */
   sensors: Record<string, SensorPayload>;
 
@@ -224,7 +221,6 @@ interface JengaState {
   setPreviewReport: (reportId: string | null) => void;
   /** Open the rail on a review and focus its task in every view. */
   openReview: (reportId: string, taskId: string) => void;
-  clearVerdict: () => void;
   loadSensors: (id: string) => Promise<void>;
   restoreIdentity: () => void;
   setRole: (role: Role) => Promise<void>;
@@ -237,8 +233,7 @@ interface JengaState {
     taskId: string,
     text: string,
     imageBase64: string | null,
-    videoFinding?: Record<string, unknown> | null,
-    mediaUrl?: string | null,
+    extra?: api.UpdateExtras,
   ) => Promise<string | null>;
   decide: (reportId: string, decision: 'approve' | 'deny', note: string) => Promise<string | null>;
   runDispute: (taskId: string, delayDays: number, reason: string) => Promise<void>;
@@ -288,8 +283,6 @@ const EMPTY_SITE = {
   selectedTaskId: null,
   selectedZone: null,
   focusOrigin: null,
-  verdict: null,
-  sideEffect: null,
   attributions: [],
   purchaseOrders: [],
   sensors: {},
@@ -545,9 +538,7 @@ export const useJenga = create<JengaState>((set, get) => ({
 
   async reset() {
     set({
-      verdict: null,
       attributions: [],
-      sideEffect: null,
       selectedTaskId: null,
       selectedZone: null,
       focusOrigin: null,
@@ -603,7 +594,6 @@ export const useJenga = create<JengaState>((set, get) => ({
     set({ reviewsOpen: true, reviewTargetId: reportId });
     get().selectTask(taskId, 'schedule');
   },
-  clearVerdict: () => set({ verdict: null, sideEffect: null }),
 
   /**
    * One poll's worth of telemetry. Merged per ticket rather than replacing the
@@ -688,7 +678,7 @@ export const useJenga = create<JengaState>((set, get) => ({
     await refreshSite(project.id);
   },
 
-  async submitUpdate(taskId, text, imageBase64, videoFinding = null, mediaUrl = null) {
+  async submitUpdate(taskId, text, imageBase64, extra = {}) {
     const site = get().activeProjectId;
     if (!site) return 'No project selected.';
     set({ busy: true });
@@ -699,16 +689,7 @@ export const useJenga = create<JengaState>((set, get) => ({
       detail: 'GPTZero authorship → vision → historical memory → telemetry → arbiter',
     });
     try {
-      await api.submitReport(
-        site,
-        taskId,
-        text,
-        imageBase64,
-        get().tasks,
-        get().strict,
-        videoFinding,
-        mediaUrl,
-      );
+      await api.submitReport(site, taskId, text, imageBase64, get().tasks, get().strict, extra);
     } catch (err) {
       set({ busy: false });
       const message = err instanceof Error ? err.message : 'Submission failed.';

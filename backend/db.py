@@ -132,6 +132,8 @@ def _define_models():
         submitted_by_role: Mapped[str] = mapped_column(String)
         report_text: Mapped[str] = mapped_column(Text)
         media_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+        report_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+        report_filename: Mapped[str | None] = mapped_column(Text, nullable=True)
         # add_evidence writes the three below; decide_report sets the decision
         gptzero_score: Mapped[float | None] = mapped_column(Float, nullable=True)
         gptzero_flag: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -520,8 +522,11 @@ async def add_evidence(row):
                 owner_decision=row.get("owner_decision"),
                 # image_base64/transcript are payloads and never land here; a
                 # video's media_url is a reference, not a payload, so unlike
-                # those two it is written straight through.
+                # those two it is written straight through. report_url is the
+                # same kind of reference, for an uploaded report document.
                 media_url=row.get("media_url"),
+                report_url=row.get("report_url"),
+                report_filename=row.get("report_filename"),
                 submitted_at=_dt(row.get("created_at"), naive=True),
             )
         )
@@ -549,6 +554,8 @@ def _report_shape(r):
         "project_id": r["project_id"],
         "report_text": r.get("report_text") or "",
         "media_url": r.get("media_url"),
+        "report_url": r.get("report_url"),
+        "report_filename": r.get("report_filename"),
         "verdict": r.get("verdict"),
         "owner_decision": r.get("owner_decision") or "pending",
         "owner_note": r.get("owner_note"),
@@ -583,6 +590,9 @@ async def reports(project_id=DEFAULT_PROJECT_ID):
                     "task_id": r.ticket_id,
                     "project_id": pid,
                     "report_text": r.report_text,
+                    "media_url": r.media_url,
+                    "report_url": r.report_url,
+                    "report_filename": r.report_filename,
                     "verdict": verdict,
                     "owner_decision": r.owner_decision,
                     "owner_note": r.owner_note,

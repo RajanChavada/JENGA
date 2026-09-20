@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS reports (
   submitted_by_role TEXT NOT NULL,
   report_text TEXT NOT NULL,
   media_url TEXT,
+  report_url TEXT,
+  report_filename TEXT,
   gptzero_score DOUBLE PRECISION,
   gptzero_flag TEXT,
   owner_decision TEXT,

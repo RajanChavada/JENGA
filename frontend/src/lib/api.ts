@@ -223,6 +223,8 @@ export interface ParsedDoc {
   char_count: number;
   text: string;
   preview: string;
+  /** Preview URL for the uploaded file's original bytes. */
+  media_url: string | null;
 }
 
 export interface ProposedTask {
@@ -395,6 +397,18 @@ export function fetchQueue(ownerId: string): Promise<QueueItem[]> {
   );
 }
 
+/** Evidence beyond the required text+image, kept out of `submitReport`'s positional
+ * args since most submissions carry none of it. */
+export interface UpdateExtras {
+  videoFinding?: Record<string, unknown> | null;
+  mediaUrl?: string | null;
+  /** MIME type of `imageBase64`, so the backend persists it with the right extension. */
+  imageMime?: string | null;
+  /** Preview URL + filename for an uploaded report document, from `parseDocument`. */
+  reportUrl?: string | null;
+  reportFilename?: string | null;
+}
+
 /** A contractor's progress update. The AI verdict comes back to the owner, not to them. */
 export async function submitReport(
   projectId: string,
@@ -403,16 +417,18 @@ export async function submitReport(
   imageBase64: string | null,
   tasks: Task[],
   strict = true,
-  videoFinding: Record<string, unknown> | null = null,
-  mediaUrl: string | null = null,
+  extra: UpdateExtras = {},
 ): Promise<void> {
   await mutate(
     `/api/tasks/${encodeURIComponent(taskId)}/verify?strict=${strict}`,
     {
       report_text: reportText,
       image_base64: imageBase64,
-      video_finding: videoFinding,
-      media_url: mediaUrl,
+      image_mime: extra.imageMime ?? null,
+      video_finding: extra.videoFinding ?? null,
+      media_url: extra.mediaUrl ?? null,
+      report_url: extra.reportUrl ?? null,
+      report_filename: extra.reportFilename ?? null,
     },
     () => {
       local.submit(projectId, taskId, reportText, fx.verdictForTask(taskId, tasks, strict));
