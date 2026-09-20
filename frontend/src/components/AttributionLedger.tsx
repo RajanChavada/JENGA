@@ -116,10 +116,15 @@ function POCard({ po }: { po: PurchaseOrder }) {
   const expeditePO = useJenga((s) => s.expeditePO);
   const markPoReceived = useJenga((s) => s.markPoReceived);
   const linkPoToTask = useJenga((s) => s.linkPoToTask);
+  const routeRisk = useJenga((s) => s.routeRisk);
   const [pending, setPending] = useState<'expedite' | 'receive' | null>(null);
   const [linking, setLinking] = useState(false);
 
   const received = po.status === 'received';
+  // The supply-line radar's read on this PO's delivery route, when one ran.
+  const route = routeRisk?.routes.find(
+    (r) => r.po_id === po.id && r.risk !== 'clear' && r.closures.length > 0,
+  );
 
   async function run(kind: 'expedite' | 'receive') {
     setPending(kind);
@@ -151,6 +156,23 @@ function POCard({ po }: { po: PurchaseOrder }) {
         )}
       </p>
       {po.last_action && <p className="mt-1 text-[10px] text-sky-700">{po.last_action}</p>}
+
+      {route && (
+        <p
+          className={`mt-1 flex items-start gap-1 text-[10px] ${
+            route.risk === 'high' ? 'text-red-600' : 'text-amber-600'
+          }`}
+        >
+          <span
+            className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${
+              route.risk === 'high' ? 'bg-red-500' : 'bg-amber-500'
+            }`}
+          />
+          route risk: {route.closures[0].roadway} — {route.closures.length} closure
+          {route.closures.length === 1 ? '' : 's'} on the delivery route
+          {route.predicted_slip_days > 0 && ` · predicted +${route.predicted_slip_days}d`}
+        </p>
+      )}
 
       <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
         <button

@@ -317,3 +317,61 @@ class DisputeResponse(BaseModel):
     critical_path: list[str]
     attribution: AttributionEntry
     project_slipped_days: int
+
+
+# --- supply-line radar --------------------------------------------------------
+
+
+class RouteClosure(BaseModel):
+    """One 511 event sitting within ~500 m of a delivery route."""
+
+    lat: float
+    lng: float
+    description: str
+    roadway: str
+    impact: str = ""
+    full_closure: bool = False
+    lanes_affected: str = ""
+
+
+class RouteCpmPreview(BaseModel):
+    """What the predicted slip would do to the schedule — a preview, never applied."""
+
+    task_id: str
+    project_slip_days: int
+    downstream_count: int
+
+
+class RouteRisk(BaseModel):
+    po_id: str
+    vendor: str
+    material: str = ""
+    vendor_lat: float
+    vendor_lng: float
+    #: Route line as GeoJSON (lng, lat) pairs, ready for a map source.
+    geometry: list[list[float]]
+    #: False when OSRM was unreachable and this is a straight-line corridor.
+    geometry_live: bool = True
+    closures: list[RouteClosure] = []
+    risk: Literal["high", "medium", "low", "clear"] = "clear"
+    predicted_slip_days: int = 0
+    cpm_preview: RouteCpmPreview | None = None
+    action: Literal["expedited", "escalated", "none"] = "none"
+    action_detail: str = ""
+
+
+class RouteSite(BaseModel):
+    name: str
+    lat: float
+    lng: float
+
+
+class RouteCheckResponse(BaseModel):
+    """One radar pass: every PO's delivery route vs Ontario 511's live events."""
+
+    #: 'live' when the 511 feed answered; 'seeded' when the fallback closure ran.
+    source: Literal["live", "seeded"]
+    checked_at: str
+    events_scanned: int
+    site: RouteSite
+    routes: list[RouteRisk]

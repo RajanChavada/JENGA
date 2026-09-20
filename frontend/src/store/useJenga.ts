@@ -8,6 +8,7 @@ import type {
   GraphEdge,
   HotzoneResponse,
   PurchaseOrder,
+  RouteCheckResponse,
   ScheduleAnalytics,
   SpendAnalytics,
   Task,
@@ -130,6 +131,11 @@ interface JengaState {
   /** Set when the last scrape press could not reach the backend at all. */
   scrapeError: string | null;
 
+  /** The last supply-line radar pass: delivery routes vs live 511 closures. */
+  routeRisk: RouteCheckResponse | null;
+  /** True while a radar pass is running. */
+  checkingRoutes: boolean;
+
   /** Live log of agentic operations, newest first. Survives site switches. */
   activity: AgentEvent[];
   /** Whether the activity rail is open. */
@@ -148,6 +154,8 @@ interface JengaState {
   loadSite: (hotzoneId: string) => Promise<void>;
   /** Press-to-scrape: run Browserbase now and put the result on the map. */
   scrapeHotzones: () => Promise<void>;
+  /** Supply-line radar: trace delivery routes and check them against 511. */
+  checkRoutes: () => Promise<void>;
   loadSample: () => Promise<void>;
   reset: () => Promise<void>;
   setView: (v: SiteView) => void;
@@ -213,6 +221,9 @@ const EMPTY_SITE = {
   purchaseOrders: [],
   schedule: null,
   spend: null,
+  // Routes are drawn from this site's POs to this site's pin; a site switch
+  // makes every line on the map a claim about the wrong project.
+  routeRisk: null,
   busy: false,
   cascading: false,
 } satisfies Partial<JengaState>;
@@ -230,6 +241,7 @@ export const useJenga = create<JengaState>((set, get) => ({
   hotzones: null,
   scrapingHotzones: false,
   scrapeError: null,
+  checkingRoutes: false,
 
   activity: [],
   activityOpen: false,
@@ -308,6 +320,66 @@ export const useJenga = create<JengaState>((set, get) => ({
               detail: result.notes,
             },
     );
+  },
+
+  /**
+   * Supply-line radar. One press: 511 closures via Browserbase, vendor→site
+   * routes via OSRM, proximity analysis, CPM preview — and when the agent
+   * expedited a PO, the ledger is re-read so the action shows everywhere the
+   * PO does. Every outcome, including the seeded fallback, is announced in the
+   * rail with the same three-way honesty as the scrape.
+   */
+  async checkRoutes() {
+    const site = get().activeProjectId;
+    set({ checkingRoutes: true });
+    const ev = get().logActivity({
+      source: 'browserbase',
+      status: 'running',
+      title: 'Checking delivery routes against live closures',
+      detail: 'Ontario 511 events · OSRM vendor routes · proximity analysis',
+    });
+    const result = await api.checkRoutes();
+    if (get().activeProjectId !== site) {
+      set({ checkingRoutes: false });
+      return; // routes belong to the site they were checked from
+    }
+    set((s) => ({ checkingRoutes: false, routeRisk: result ?? s.routeRisk }));
+
+    if (!result) {
+      get().updateActivity(ev, {
+        status: 'error',
+        title: 'Route check did not reach the backend',
+      });
+      return;
+    }
+    const flagged = result.routes.filter((r) => r.risk !== 'clear');
+    get().updateActivity(ev, {
+      status: result.source === 'live' ? (flagged.length ? 'warn' : 'ok') : 'warn',
+      title:
+        result.source === 'live'
+          ? `${result.events_scanned} live 511 events · ${flagged.length}/${result.routes.length} routes at risk`
+          : 'Live 511 feed unreachable — seeded closure used',
+      detail: flagged
+        .map((r) => `${r.po_id} via ${r.closures[0]?.roadway ?? '—'}: ${r.risk}`)
+        .join(' · '),
+    });
+
+    // The agent may have acted; announce it and refresh what it touched.
+    const acted = result.routes.find((r) => r.action !== 'none');
+    if (acted) {
+      const preview = acted.cpm_preview;
+      get().logActivity({
+        source: 'zip',
+        status: 'ok',
+        title: `${acted.po_id} auto-expedited — ${acted.closures[0]?.roadway ?? 'route'} closure`,
+        detail: preview
+          ? `Predicted +${acted.predicted_slip_days}d delivery slip → ${preview.task_id} → project +${preview.project_slip_days}d, ${preview.downstream_count} downstream. ${acted.action_detail}`
+          : acted.action_detail,
+      });
+      const pos = await api.fetchPurchaseOrders();
+      if (get().activeProjectId === site) set({ purchaseOrders: pos });
+      void get().loadAnalytics();
+    }
   },
 
   /**

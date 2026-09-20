@@ -15,6 +15,7 @@ import cpm_engine
 import db
 import documents
 import procurement_agent
+import route_risk
 import seed as seed_module
 from integrations import tiger, zip_api
 from integrations.gptzero import FLAG_THRESHOLD
@@ -30,6 +31,7 @@ from schemas import (
     ParsedDocument,
     POActionRequest,
     PurchaseOrder,
+    RouteCheckResponse,
     ScheduleAnalytics,
     SpendAnalytics,
     StateRequest,
@@ -168,6 +170,19 @@ async def scrape_hotzones():
     Without a Browserbase key it returns the seed with a note saying so.
     """
     return await browserbase_hotzones.hotzones(force_live=True)
+
+
+@app.post("/api/routes/check", response_model=RouteCheckResponse)
+async def check_delivery_routes():
+    """Supply-line radar, operator-triggered like the scrape.
+
+    Traces every PO's vendor→site route (OSRM), pulls Ontario 511's live
+    closure feed through Browserbase, flags events within ~500 m of a route,
+    previews the CPM impact of the predicted delivery slip, and auto-expedites
+    via Zip when the slip would move the schedule. Each fallback is labelled in
+    the payload — `source: "seeded"` means the live feed was unreachable.
+    """
+    return await route_risk.check_routes()
 
 
 @app.get("/api/analytics/schedule", response_model=ScheduleAnalytics)

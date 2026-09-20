@@ -5,6 +5,7 @@ import type {
   GraphResponse,
   HotzoneResponse,
   PurchaseOrder,
+  RouteCheckResponse,
   ScheduleAnalytics,
   SpendAnalytics,
   Task,
@@ -119,6 +120,28 @@ export async function scrapeHotzones(): Promise<HotzoneResponse | null> {
     return (await res.json()) as HotzoneResponse;
   } catch (err) {
     console.warn('[jenga] hotzone scrape did not complete.', err);
+    return null;
+  }
+}
+
+/**
+ * Supply-line radar pass. Same honesty contract as the scrape: a discrete user
+ * action that bypasses the offline latch, returns null when the backend never
+ * answered (nothing is faked from fixtures), and clears the latch on success.
+ * Generous timeout — the pass fans out to 511, OSRM per vendor, and Zip.
+ */
+export async function checkRoutes(): Promise<RouteCheckResponse | null> {
+  if (FIXTURES_ONLY) return null;
+  try {
+    const res = await fetch(`${BASE}/api/routes/check`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(60000),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    offline = false;
+    return (await res.json()) as RouteCheckResponse;
+  } catch (err) {
+    console.warn('[jenga] route check did not complete.', err);
     return null;
   }
 }

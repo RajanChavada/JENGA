@@ -252,3 +252,52 @@ export interface Submission {
   image: string;
   transcript: string | null;
 }
+
+/* --------------------------------------------------------------------------
+ * Supply-line radar: delivery routes vs Ontario 511's live closure feed.
+ * ------------------------------------------------------------------------ */
+
+/** One 511 event sitting within ~500 m of a delivery route. */
+export interface RouteClosure {
+  lat: number;
+  lng: number;
+  description: string;
+  roadway: string;
+  impact: string;
+  full_closure: boolean;
+  lanes_affected: string;
+}
+
+/** What the predicted slip would do to the schedule — a preview, never applied. */
+export interface RouteCpmPreview {
+  task_id: string;
+  project_slip_days: number;
+  downstream_count: number;
+}
+
+export interface RouteRisk {
+  po_id: string;
+  vendor: string;
+  material: string;
+  vendor_lat: number;
+  vendor_lng: number;
+  /** Route line as GeoJSON (lng, lat) pairs, ready for a map source. */
+  geometry: number[][];
+  /** False when OSRM was unreachable and this is a straight-line corridor. */
+  geometry_live: boolean;
+  closures: RouteClosure[];
+  risk: 'high' | 'medium' | 'low' | 'clear';
+  predicted_slip_days: number;
+  cpm_preview: RouteCpmPreview | null;
+  action: 'expedited' | 'escalated' | 'none';
+  action_detail: string;
+}
+
+export interface RouteCheckResponse {
+  /** 'live' when the 511 feed answered; 'seeded' when the fallback closure ran. */
+  source: 'live' | 'seeded';
+  checked_at: string;
+  events_scanned: number;
+  site: { name: string; lat: number; lng: number };
+  routes: RouteRisk[];
+}
