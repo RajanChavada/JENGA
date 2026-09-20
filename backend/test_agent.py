@@ -146,7 +146,12 @@ async def main() -> None:
     # --- Strict mode: how much authority the authorship score carries --------
     sub2 = next(s for s in EVIDENCE["submissions"] if s["id"] == "SUB-02")
     task2 = TASKS[sub2["task_id"]]
-    advisory = f"GPTZero advisory: {sub2['expected']['gptzero']['ai_probability']:.0%} AI"
+    # Matches the arbiter's authorship note ("... scores 94% on GPTZero's
+    # AI-authorship check ..."), reworded in the gemini feedback pass (#21).
+    advisory = (
+        f"scores {sub2['expected']['gptzero']['ai_probability']:.0%} "
+        "on GPTZero's AI-authorship check"
+    )
 
     async def run_sub2(strict: bool) -> dict:
         return await verify_submission(
@@ -194,7 +199,7 @@ async def main() -> None:
     lenient = await _decide({**flagged_but_legible, "strict": False})
     approved = lenient["verdict"]
     assert approved["status"] == "APPROVED", approved["status"]
-    assert "GPTZero advisory: 93% AI" in approved["reasoning"], approved["reasoning"]
+    assert "scores 93% on GPTZero's AI-authorship check" in approved["reasoning"], approved["reasoning"]
     assert approved["actionable_request"] is None, approved["actionable_request"]
     print("PASS  flagged report + legible photo, lenient -> APPROVED carrying the advisory")
 

@@ -14,7 +14,6 @@ import type {
   Role,
   RouteCheckResponse,
   ScheduleAnalytics,
-  SensorPayload,
   SpendAnalytics,
   Task,
   TaskState,
@@ -176,9 +175,6 @@ interface JengaState {
   activity: AgentEvent[];
   /** Whether the activity rail is open. */
   activityOpen: boolean;
-  /** Curing telemetry, keyed by ticket. Nothing polls it since SensorStrip was removed. */
-  sensors: Record<string, SensorPayload>;
-
   /**
    * Who is looking. A demo role switcher, not authentication: the API scopes by
    * the ids it is given and the UI filters by these. See CONTRACT.md.
@@ -221,7 +217,6 @@ interface JengaState {
   setPreviewReport: (reportId: string | null) => void;
   /** Open the rail on a review and focus its task in every view. */
   openReview: (reportId: string, taskId: string) => void;
-  loadSensors: (id: string) => Promise<void>;
   restoreIdentity: () => void;
   setRole: (role: Role) => Promise<void>;
   setOwner: (id: string) => Promise<void>;
@@ -285,7 +280,6 @@ const EMPTY_SITE = {
   focusOrigin: null,
   attributions: [],
   purchaseOrders: [],
-  sensors: {},
   schedule: null,
   spend: null,
   // Routes are drawn from this site's POs to this site's pin; a site switch
@@ -542,7 +536,6 @@ export const useJenga = create<JengaState>((set, get) => ({
       selectedTaskId: null,
       selectedZone: null,
       focusOrigin: null,
-      sensors: {},
     });
     // Nothing to re-seed on a site with no project: reloading here would pull
     // the default project's graph onto a pin that has no site behind it.
@@ -593,20 +586,6 @@ export const useJenga = create<JengaState>((set, get) => ({
   openReview: (reportId, taskId) => {
     set({ reviewsOpen: true, reviewTargetId: reportId });
     get().selectTask(taskId, 'schedule');
-  },
-
-  /**
-   * One poll's worth of telemetry. Merged per ticket rather than replacing the
-   * map, so switching selection back and forth keeps the previous sparkline on
-   * screen instead of blanking it for one tick.
-   */
-  async loadSensors(id) {
-    const payload = await api.fetchSensors(id);
-    // A poll in flight when the site changed belongs to the old project. The
-    // strip is already unmounted by then, but writing the reading back would
-    // put the ticket straight into the map the switch just cleared.
-    if (!get().tasks.some((t) => t.id === id)) return;
-    set((s) => ({ sensors: { ...s.sensors, [id]: payload } }));
   },
 
   /** Read the saved identity after hydration; reading it at module init would mismatch the server HTML. */

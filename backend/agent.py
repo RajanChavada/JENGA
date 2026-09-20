@@ -403,8 +403,11 @@ async def _decide(state: VerifyState) -> dict:
     # Append the authorship note for the branches that don't already name it in
     # their own prose. After the canned override so demo wording cannot swallow
     # it. Reasoning only — status, confidence and request are left as the
-    # surviving rule set them.
-    if branch in ("sensor_conflict", "ambiguity_rule", "contradiction"):
+    # surviving rule set them. A lenient approval of a *flagged* report also
+    # carries the note: the override must never silently swallow the advisory.
+    if branch in ("pace_conflict", "ambiguity_rule", "contradiction") or (
+        ai_flagged and not strict and branch == "approved"
+    ):
         reasoning = f"{reasoning.rstrip()} {authorship_note}"
 
     if status == "UNDER_REVIEW":
