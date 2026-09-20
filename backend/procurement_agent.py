@@ -220,6 +220,7 @@ async def _create_live(
         "po_id": po_id,
         "po_number": number,
         "vendor": vendor["name"],
+        "amount": round(sum(i["quantity"] * i["rate"] for i in items), 2),
         "detail": (
             f"Purchase order {number} created live on Zip staging "
             f"({len(items)} line item{'s' if len(items) != 1 else ''}, vendor {vendor['name']})."
@@ -283,6 +284,7 @@ async def run(packages: list[dict], filename: str | None = None) -> dict:
         "po_id": None,
         "po_number": po_number,
         "vendor": "Pending vendor assignment",
+        "amount": round(est_total, 2),
         "detail": detail,
         "steps": steps,
         "purchase_order": {

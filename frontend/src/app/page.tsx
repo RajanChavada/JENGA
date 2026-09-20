@@ -12,6 +12,7 @@ import { RoleSwitcher } from "@/components/RoleSwitcher";
 import { Splitter, useFraction } from "@/components/Splitter";
 import { ActivityRail, ActivityToggle } from "@/components/ActivityRail";
 import { MacroHeatmap } from "@/components/MacroHeatmap";
+import { PaceStrip } from "@/components/PaceStrip";
 import { DocumentUpload } from "@/components/DocumentUpload";
 import { useJenga } from "@/store/useJenga";
 
@@ -241,6 +242,9 @@ function SiteTab() {
         onFraction={setTopFrac}
         onReset={resetTop}
       />
+
+      {/* Site pace at a glance — SPI, spend vs earned, projected finish. */}
+      <PaceStrip />
 
       {/* Schedule spans the full width along the bottom. */}
       <div className="min-h-0 flex-1">

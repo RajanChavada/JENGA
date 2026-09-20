@@ -1,9 +1,21 @@
-"""Tiger Data (TimescaleDB) sensor stream: concrete-curing telemetry per ticket.
+"""Tiger Data (TimescaleDB) site-event stream: the time axis of the whole product.
 
-Two modes. "tiger" writes to the `sensor_metrics` hypertable and reads the
-`sensor_metrics_5min` continuous aggregate. "mock" keeps a rolling deque per
-ticket in memory so the simulator and the agent behave identically with no
-network. Any connection failure flips the process to mock for good.
+One narrow table, `site_events (time, subject, event, value)`, holds every
+timestamped fact JENGA learns about the site:
+
+- `work_verified`   — a verification approved real work; `value` = days earned.
+- `work_disputed` / `work_review` — a verdict that did not credit progress.
+- `po_created` / `po_expedited` / `po_delivered` — procurement lifecycle;
+  `value` = committed dollars.
+- `escalation`      — the governance agent flagged spend outrunning the build.
+
+`analytics.py` turns this stream into the earned-schedule S-curve, the spend
+velocity curve, and the pace check the verification arbiter reads.
+
+Two modes. "tiger" writes to the `site_events` hypertable and buckets with
+`time_bucket`; "mock" keeps the same rows in memory and buckets in Python so
+the demo behaves identically with no network. Any connection failure flips the
+process to mock for good.
 
 Exception *types* are logged, never their messages: a connection error's text
 carries host and user from the DSN.
@@ -11,91 +23,60 @@ carries host and user from the DSN.
 
 from __future__ import annotations
 
-import math
 import os
-from collections import defaultdict, deque
-from datetime import datetime, timedelta, timezone
+from collections import defaultdict
+from datetime import date, datetime, timedelta, timezone
 
 from integrations import OFFLINE, emit
 
 TIGER_SERVICE_URL = os.getenv("TIGER_SERVICE_URL")
-CURING_MIN_TEMP_C = 10.0  # ponytail: ACI 306 early-age minimum; real threshold depends on mix design
 
-#: Readings required before the average is allowed to decide anything — roughly
-#: 20 s at the 2 s tick. A verdict resting on five readings over eleven seconds
-#: would not survive the obvious question ("how many readings is that based
-#: on?"), and answering it badly undoes the whole argument that this evidence
-#: source needs a time-series database at all. Ten over twenty seconds is a
-#: defensible floor for a two-minute curing window.
-SENSOR_MIN_SAMPLES = 10
-
-SQL_LIVE = (
-    "SELECT time_bucket(make_interval(secs=>$1), time) AS bucket, sensor_type, avg(reading) "
-    "FROM sensor_metrics WHERE ticket_id=$2 AND time > now() - make_interval(secs=>$3) "
-    "GROUP BY 1,2 ORDER BY 1"
+#: DDL for the live mode, applied on first write if missing. `create_hypertable`
+#: is what makes `time_bucket` fast at scale; harmless to re-run.
+SQL_DDL = (
+    "CREATE TABLE IF NOT EXISTS site_events ("
+    " time TIMESTAMPTZ NOT NULL, subject TEXT NOT NULL,"
+    " event TEXT NOT NULL, value DOUBLE PRECISION NOT NULL DEFAULT 0);"
+    " SELECT create_hypertable('site_events', 'time', if_not_exists => TRUE);"
 )
-SQL_AGG = (
-    "SELECT bucket, sensor_type, avg_reading, min_reading, max_reading "
-    "FROM sensor_metrics_5min WHERE ticket_id=$1 AND bucket > now() - make_interval(hours=>$2) "
-    "ORDER BY bucket"
+SQL_INSERT = (
+    "INSERT INTO site_events (time, subject, event, value) VALUES ($1,$2,$3,$4)"
+)
+#: The daily rollup the S-curve and spend curve are built from — a real
+#: `time_bucket` in live mode, mirrored bucket-for-bucket by `_mock_daily`.
+SQL_DAILY = (
+    "SELECT time_bucket('1 day', time) AS bucket, sum(value) AS total "
+    "FROM site_events WHERE event = ANY($1) AND time > now() - make_interval(days=>$2) "
+    "GROUP BY 1 ORDER BY 1"
+)
+SQL_RANGE = (
+    "SELECT time, subject, event, value FROM site_events "
+    "WHERE time > now() - make_interval(days=>$1) ORDER BY time"
 )
 
 # Mock storage when there is no DSN, when the demo is forced offline, or when
-# the simulator itself is off — the last of those keeps the test suite hermetic,
-# since otherwise every `sensor_check` in test_agent.py would dial Tiger Cloud.
-# Note the asymmetry with sensors.py: JENGA_OFFLINE=1 mocks the *storage* while
-# the simulator keeps running, so the offline demo still has a moving sparkline.
+# storage is explicitly disabled — the last keeps the test suite hermetic.
 _SENSORS_OFF = os.getenv("JENGA_SENSORS", "1").strip() == "0"
 _mode = "mock" if (OFFLINE or _SENSORS_OFF or not TIGER_SERVICE_URL) else "tiger"
 _pool = None
-#: ticket_id -> deque[(ts, sensor_type, reading)]
-_mock: dict[str, deque] = defaultdict(lambda: deque(maxlen=600))
-#: ticket_id -> when its curing regime last changed. Readings taken under the
-#: previous regime are not observations of the current one, so windows are
-#: clamped to this: a slab that has just been hit by a cold snap is not
-#: honestly described by an average still carrying two minutes of warm readings.
-_regime_since: dict[str, datetime] = {}
+_ddl_applied = False
+#: Mock store: (time, subject, event, value), append-only, insertion-ordered.
+_events: list[tuple[datetime, str, str, float]] = []
 
 
 def source() -> str:
     return _mode
 
 
-def mark_regime_change(ticket_id: str) -> None:
-    """Start a fresh averaging window for a ticket whose curing regime changed."""
-    _regime_since[ticket_id] = datetime.now(timezone.utc)
-
-
-def effective_window(ticket_id: str, window_s: int) -> int:
-    """`window_s`, shortened to the age of the current curing regime.
-
-    Untouched for a ticket that never had a scenario set, and back to the full
-    `window_s` once the current regime has been running that long — so a pour
-    that was cold from the start reads as a full window of cold, not as a
-    handful of samples.
-
-    Rounded up, not truncated. Truncating drops any reading taken in the
-    fractional second after the regime changed, which shows up as the card
-    flickering to "no telemetry" during the ten seconds the audience is watching
-    the sparkline. Rounding up can instead reach under a second past the change,
-    which is at most one reading at the 2 s tick — the cheaper error.
-    """
-    since = _regime_since.get(ticket_id)
-    if since is None:
-        return window_s
-    elapsed = (datetime.now(timezone.utc) - since).total_seconds()
-    return max(1, min(window_s, math.ceil(elapsed)))
-
-
 def _go_mock(exc: Exception) -> None:
     global _mode
     if _mode != "mock":
-        emit("warning", "tiger: falling back to mock sensor store", error=type(exc).__name__)
+        emit("warning", "tiger: falling back to mock event store", error=type(exc).__name__)
     _mode = "mock"
 
 
 async def _get_pool():
-    global _pool
+    global _pool, _ddl_applied
     if _pool is None:
         import asyncpg
 
@@ -103,11 +84,15 @@ async def _get_pool():
         _pool = await asyncpg.create_pool(
             TIGER_SERVICE_URL, min_size=1, max_size=3, command_timeout=5
         )
+    if not _ddl_applied:
+        async with _pool.acquire() as con:
+            await con.execute(SQL_DDL)
+        _ddl_applied = True
     return _pool
 
 
 async def close() -> None:
-    """Release the pool. Called from the FastAPI lifespan, after the simulator stops."""
+    """Release the pool. Called from the FastAPI lifespan."""
     global _pool
     if _pool is None:
         return
@@ -118,120 +103,86 @@ async def close() -> None:
         emit("warning", "tiger: pool close failed", error=type(exc).__name__)
 
 
-async def insert_readings(rows: list[tuple[datetime, str, str, float]]) -> None:
-    """rows: (time, ticket_id, sensor_type, reading)."""
+async def record_event(
+    subject: str, event: str, value: float = 0.0, ts: datetime | None = None
+) -> None:
+    """Land one timestamped site fact. Never raises — a full store is telemetry,
+    not a dependency, and losing one point must not break a verify."""
+    await record_events([(ts or datetime.now(timezone.utc), subject, event, float(value))])
+
+
+async def record_events(rows: list[tuple[datetime, str, str, float]]) -> None:
+    """rows: (time, subject, event, value)."""
+    if not rows:
+        return
     if _mode == "tiger":
         try:
             pool = await _get_pool()
-            await pool.executemany(
-                "INSERT INTO sensor_metrics (time, ticket_id, sensor_type, reading) VALUES ($1,$2,$3,$4)",
-                rows,
-            )
+            await pool.executemany(SQL_INSERT, rows)
             return
         except Exception as exc:
             _go_mock(exc)
-    for ts, ticket_id, sensor_type, reading in rows:
-        _mock[ticket_id].append((ts, sensor_type, reading))
+    _events.extend(rows)
 
 
-def _pivot(rows, key="bucket") -> list[dict]:
-    """(bucket, sensor_type, agg...) rows -> one dict per bucket with temp/humidity columns."""
-    out: dict = {}
-    for r in rows:
-        b = r[key]
-        d = out.setdefault(b, {"bucket": b.isoformat(), "avg_temp": None, "avg_humidity": None})
-        col = "temp" if r["sensor_type"] == "temp_c" else "humidity"
-        d[f"avg_{col}"] = float(r["avg"])
-        if "min" in r.keys():
-            d[f"min_{col}"] = float(r["min"])
-            d[f"max_{col}"] = float(r["max"])
-    return [out[b] for b in sorted(out)]
+async def clear_events() -> None:
+    """Wipe the event stream (tests, /api/reset re-seed).
+
+    Live mode deletes the demo hypertable's rows too: `/api/reset` promises the
+    seeded baseline back, and a reset that silently kept old events would redraw
+    yesterday's curves over today's demo. Single-project table, so the unscoped
+    delete is the honest implementation, not a shortcut.
+    """
+    if _mode == "tiger":
+        try:
+            pool = await _get_pool()
+            await pool.execute("DELETE FROM site_events")
+            return
+        except Exception as exc:
+            _go_mock(exc)
+    _events.clear()
 
 
-def _mock_rows(ticket_id: str, window_s: int, bucket_s: int):
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=window_s)
-    acc: dict = defaultdict(list)
-    for ts, st, val in _mock.get(ticket_id, ()):
-        if ts > cutoff:
-            b = datetime.fromtimestamp(int(ts.timestamp()) // bucket_s * bucket_s, tz=timezone.utc)
-            acc[(b, st)].append(val)
+async def events(days: int = 90) -> list[dict]:
+    """Every event in the window, oldest first: {time, subject, event, value}."""
+    if _mode == "tiger":
+        try:
+            pool = await _get_pool()
+            rows = await pool.fetch(SQL_RANGE, days)
+            return [
+                {"time": r["time"], "subject": r["subject"], "event": r["event"], "value": float(r["value"])}
+                for r in rows
+            ]
+        except Exception as exc:
+            _go_mock(exc)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     return [
-        {"bucket": b, "sensor_type": st, "avg": sum(v) / len(v)}
-        for (b, st), v in acc.items()
+        {"time": ts, "subject": s, "event": e, "value": v}
+        for ts, s, e, v in _events
+        if ts > cutoff
     ]
 
 
-async def recent_buckets(ticket_id: str, window_s: int = 120, bucket_s: int = 10) -> list[dict]:
-    window_s = effective_window(ticket_id, window_s)
-    if _mode == "tiger":
-        try:
-            pool = await _get_pool()
-            rows = await pool.fetch(SQL_LIVE, bucket_s, ticket_id, window_s)
-            return _pivot(rows)
-        except Exception as exc:
-            _go_mock(exc)
-    return _pivot(_mock_rows(ticket_id, window_s, bucket_s))
+def _mock_daily(kinds: list[str], days: int) -> list[dict]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    acc: dict[date, float] = defaultdict(float)
+    for ts, _s, e, v in _events:
+        if e in kinds and ts > cutoff:
+            acc[ts.date()] += v
+    return [{"day": d, "total": acc[d]} for d in sorted(acc)]
 
 
-async def history_5min(ticket_id: str, hours: int = 1) -> list[dict]:
-    """The continuous aggregate. Empty in mock mode — there is no aggregate to read."""
-    if _mode != "tiger":
-        return []
-    try:
-        pool = await _get_pool()
-        rows = await pool.fetch(SQL_AGG, ticket_id, hours)
-        return _pivot(
-            [
-                {"bucket": r["bucket"], "sensor_type": r["sensor_type"], "avg": r["avg_reading"],
-                 "min": r["min_reading"], "max": r["max_reading"]}
-                for r in rows
-            ]
-        )
-    except Exception as exc:
-        emit("warning", "tiger: history_5min unavailable", error=type(exc).__name__)
-        return []
+async def daily_totals(kinds: list[str], days: int = 90) -> list[dict]:
+    """Per-day sums for a set of event kinds: [{day: date, total: float}].
 
-
-async def curing_status(ticket_id: str, window_s: int = 120) -> dict:
-    """Curing verdict input. `window_s` in the result is the window actually measured.
-
-    Callers render that number, so it has to be the effective one;
-    `window_requested_s` is kept alongside it so "two minutes of data" and "two
-    minutes asked for, forty-five seconds available" stay distinguishable.
+    In live mode this is TimescaleDB's `time_bucket` doing the work; the mock
+    mirrors it bucket-for-bucket so analytics behave identically offline.
     """
-    effective = effective_window(ticket_id, window_s)
-    temps: list[float] = []
     if _mode == "tiger":
         try:
             pool = await _get_pool()
-            rows = await pool.fetch(
-                "SELECT reading FROM sensor_metrics WHERE ticket_id=$1 AND sensor_type='temp_c' "
-                "AND time > now() - make_interval(secs=>$2)",
-                ticket_id, effective,
-            )
-            temps = [float(r["reading"]) for r in rows]
+            rows = await pool.fetch(SQL_DAILY, kinds, days)
+            return [{"day": r["bucket"].date(), "total": float(r["total"])} for r in rows]
         except Exception as exc:
             _go_mock(exc)
-    if _mode == "mock":
-        cutoff = datetime.now(timezone.utc) - timedelta(seconds=effective)
-        temps = [v for ts, st, v in _mock.get(ticket_id, ()) if st == "temp_c" and ts > cutoff]
-    avg = sum(temps) / len(temps) if temps else None
-    return {
-        "avg_temp_c": round(avg, 2) if avg is not None else None,
-        "min_temp_c": round(min(temps), 2) if temps else None,
-        "samples": len(temps),
-        # Too few readings is not the same fact as a warm slab, and neither is it
-        # a cold one: below the floor this stays False and the arbiter's rule 0
-        # cannot fire. Callers distinguish the two by comparing `samples`
-        # against `min_samples`.
-        "below_threshold": (
-            len(temps) >= SENSOR_MIN_SAMPLES
-            and avg is not None
-            and avg < CURING_MIN_TEMP_C
-        ),
-        "threshold_c": CURING_MIN_TEMP_C,
-        "min_samples": SENSOR_MIN_SAMPLES,
-        "window_s": effective,
-        "window_requested_s": window_s,
-        "source": _mode,
-    }
+    return _mock_daily(kinds, days)

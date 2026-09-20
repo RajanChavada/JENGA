@@ -9,9 +9,8 @@ import type {
   GraphEdge,
   GraphResponse,
   HotzoneResponse,
+  PaceStatus,
   PurchaseOrder,
-  SensorPayload,
-  SensorStatus,
   Submission,
   Task,
   TaskState,
@@ -233,86 +232,43 @@ function historicalFor(task: Task | undefined): string {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Curing telemetry — offline mirror of backend/integrations/tiger.py          */
+/* Site pace — offline mirror of backend/analytics.py + agent._pace_card       */
 /* -------------------------------------------------------------------------- */
 
 /**
- * What the sensor endpoint yields when there is nothing to read: no backend, or
- * a ticket the simulator never emitted for. Deliberately a real zero-sample
- * payload rather than invented readings — an offline sparkline that moved would
- * be the panel claiming a measurement nobody took.
- */
-export function sensors(): SensorPayload {
-  return {
-    live: [],
-    history: [],
-    status: {
-      avg_temp_c: null,
-      min_temp_c: null,
-      samples: 0,
-      below_threshold: false,
-      threshold_c: 10,
-      min_samples: 10,
-      window_s: 120,
-      window_requested_s: 120,
-      source: 'mock',
-    },
-  };
-}
-
-/**
- * Mirrors `_window_label` in backend/agent.py: seconds under two minutes, whole
- * minutes at or above it. Every string quoting a window goes through this, so
- * neither half of the app can claim an averaging window it did not measure.
- */
-export function windowLabel(seconds: number): string {
-  return seconds >= 120 ? `${Math.floor(seconds / 60)} min` : `${seconds} s`;
-}
-
-/** Mirrors the backend's `:g` on the threshold — `10`, never `10.0`. */
-export function thresholdLabel(celsius: number): string {
-  return String(Number(celsius.toPrecision(6)));
-}
-
-/**
- * Offline mirror of `_sensor_card` in backend/agent.py, string for string.
+ * Offline mirror of `_pace_card` in backend/agent.py, string for string.
  *
- * Four states, tested in this order: no samples, too sparse to judge, below
- * threshold, warm enough. The sparse state is `info` and not `ok` because "too
- * few readings to judge" and "the pour is fine" are different facts — and it
- * has to be re-derived from `samples < min_samples` here for the same reason
- * the backend re-derives it: `below_threshold` folds both into `false`.
- *
- * The floor and the window come off the payload, never from a constant here;
- * the backend clamps the window to the current curing regime, so it is
- * routinely something other than two minutes.
+ * Four states, tested in this order: no history, too thin to judge, flagged
+ * (claim outruns the measured pace), consistent. The thin state is `info` and
+ * not `ok` because "too little history to judge" and "the site is pacing fine"
+ * are different facts — one card cannot claim both.
  */
-export function sensorCard(sensor?: SensorStatus | null): {
+export function paceCard(pace?: PaceStatus | null): {
   detail: string;
   signal: VerdictStep['signal'];
 } {
-  const avg = sensor?.avg_temp_c ?? null;
-  const samples = sensor?.samples ?? 0;
-  if (!sensor || !samples || avg === null) {
-    return { detail: 'No sensor telemetry for this ticket.', signal: 'info' };
+  const samples = pace?.samples ?? 0;
+  const spi = pace?.spi ?? null;
+  if (!pace || !samples || spi === null) {
+    return { detail: 'No site-pace history for this project yet.', signal: 'info' };
   }
-  const window = windowLabel(sensor.window_s ?? 0);
-  const threshold = thresholdLabel(sensor.threshold_c ?? 10);
-  const floor = sensor.min_samples || 10;
+  const floor = pace.min_samples || 5;
+  const zone = (pace.zone || '').replace(/_/g, ' ');
+  const window = pace.window_days || 7;
   if (samples < floor) {
     return {
-      detail: `Telemetry too sparse to judge: ${samples} reading${samples === 1 ? '' : 's'} in the last ${window}, ${floor} needed.`,
+      detail: `Pace history too thin to judge: ${samples} event${samples === 1 ? '' : 's'} recorded, ${floor} needed.`,
       signal: 'info',
     };
   }
-  if (sensor.below_threshold) {
+  if (pace.flagged) {
     return {
-      detail: `Curing temp avg ${avg.toFixed(1)} °C over last ${window}, below ${threshold} °C threshold.`,
+      detail: `Site pacing at SPI ${spi.toFixed(2)} (floor ${pace.spi_floor}) and no verified work in ${zone} for ${window} days — the claim outruns the site's measured pace.`,
       signal: 'bad',
     };
   }
   return {
-    detail: `Curing temp avg ${avg.toFixed(1)} °C over last ${window} (threshold ${threshold} °C).`,
+    detail: `SPI ${spi.toFixed(2)} · ${pace.zone_earned_days}d verified in ${zone} over the last ${window} days — pace consistent with the claim.`,
     signal: 'ok',
   };
 }

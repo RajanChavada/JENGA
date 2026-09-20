@@ -12,7 +12,9 @@ import type {
   QueueItem,
   Report,
   Role,
-  SensorPayload,
+  RouteCheckResponse,
+  ScheduleAnalytics,
+  SpendAnalytics,
   Task,
   TaskState,
   Zone,
@@ -161,13 +163,18 @@ interface JengaState {
   /** Set when the last scrape press could not reach the backend at all. */
   scrapeError: string | null;
 
+  /** The last supply-line radar pass: delivery routes vs live 511 closures. */
+  routeRisk: RouteCheckResponse | null;
+  /** True while a radar pass is running. */
+  checkingRoutes: boolean;
+  /** The earned-schedule S-curve and spend velocity, refreshed after actions. */
+  schedule: ScheduleAnalytics | null;
+  spend: SpendAnalytics | null;
+
   /** Live log of agentic operations, newest first. Survives site switches. */
   activity: AgentEvent[];
   /** Whether the activity rail is open. */
   activityOpen: boolean;
-  /** Curing telemetry, keyed by ticket. Nothing polls it since SensorStrip was removed. */
-  sensors: Record<string, SensorPayload>;
-
   /**
    * Who is looking. A demo role switcher, not authentication: the API scopes by
    * the ids it is given and the UI filters by these. See CONTRACT.md.
@@ -194,6 +201,10 @@ interface JengaState {
   loadSite: (hotzoneId: string) => Promise<void>;
   /** Press-to-scrape: run Browserbase now and put the result on the map. */
   scrapeHotzones: () => Promise<void>;
+  /** Supply-line radar: trace delivery routes and check them against 511. */
+  checkRoutes: () => Promise<void>;
+  /** Refresh both analytics payloads; logs a new escalation into the rail. */
+  loadAnalytics: () => Promise<void>;
   loadSample: () => Promise<void>;
   reset: () => Promise<void>;
   setView: (v: SiteView) => void;
@@ -206,7 +217,6 @@ interface JengaState {
   setPreviewReport: (reportId: string | null) => void;
   /** Open the rail on a review and focus its task in every view. */
   openReview: (reportId: string, taskId: string) => void;
-  loadSensors: (id: string) => Promise<void>;
   restoreIdentity: () => void;
   setRole: (role: Role) => Promise<void>;
   setOwner: (id: string) => Promise<void>;
@@ -270,7 +280,11 @@ const EMPTY_SITE = {
   focusOrigin: null,
   attributions: [],
   purchaseOrders: [],
-  sensors: {},
+  schedule: null,
+  spend: null,
+  // Routes are drawn from this site's POs to this site's pin; a site switch
+  // makes every line on the map a claim about the wrong project.
+  routeRisk: null,
   busy: false,
   cascading: false,
 } satisfies Partial<JengaState>;
@@ -288,6 +302,11 @@ export const useJenga = create<JengaState>((set, get) => ({
   hotzones: null,
   scrapingHotzones: false,
   scrapeError: null,
+
+  routeRisk: null,
+  checkingRoutes: false,
+  schedule: null,
+  spend: null,
 
   activity: [],
   activityOpen: false,
@@ -333,6 +352,8 @@ export const useJenga = create<JengaState>((set, get) => ({
       loading: false,
       offline: api.isOffline(),
     });
+    // The curves belong to the freshly loaded site.
+    void get().loadAnalytics();
   },
 
   /**
@@ -377,6 +398,94 @@ export const useJenga = create<JengaState>((set, get) => ({
               detail: result.notes,
             },
     );
+  },
+
+  /**
+   * Supply-line radar: trace every PO's delivery route via OSRM and check it
+   * against Ontario 511's live closure feed (fetched through Browserbase).
+   * Discrete user action — announces itself and its outcome in the activity
+   * rail with the same three-way honesty as the scrape.
+   */
+  async checkRoutes() {
+    const site = get().activeProjectId;
+    set({ checkingRoutes: true });
+    const ev = get().logActivity({
+      source: 'browserbase',
+      status: 'running',
+      title: 'Checking delivery routes against live closures',
+      detail: 'Ontario 511 events · OSRM vendor routes · proximity analysis',
+    });
+    const result = await api.checkRoutes();
+    if (get().activeProjectId !== site) {
+      set({ checkingRoutes: false });
+      return; // routes belong to the site they were checked from
+    }
+    set((s) => ({ checkingRoutes: false, routeRisk: result ?? s.routeRisk }));
+
+    if (!result) {
+      get().updateActivity(ev, {
+        status: 'error',
+        title: 'Route check did not reach the backend',
+      });
+      return;
+    }
+    const flagged = result.routes.filter((r) => r.risk !== 'clear');
+    get().updateActivity(ev, {
+      status: result.source === 'live' ? (flagged.length ? 'warn' : 'ok') : 'warn',
+      title:
+        result.source === 'live'
+          ? `${result.events_scanned} live 511 events · ${flagged.length}/${result.routes.length} routes at risk`
+          : 'Live 511 feed unreachable — seeded closure used',
+      detail: flagged
+        .map((r) => `${r.po_id} via ${r.closures[0]?.roadway ?? '—'}: ${r.risk}`)
+        .join(' · '),
+    });
+
+    // The agent may have acted; announce it and refresh what it touched.
+    const acted = result.routes.find((r) => r.action !== 'none');
+    if (acted) {
+      const preview = acted.cpm_preview;
+      get().logActivity({
+        source: 'zip',
+        status: 'ok',
+        title: `${acted.po_id} auto-expedited — ${acted.closures[0]?.roadway ?? 'route'} closure`,
+        detail: preview
+          ? `Predicted +${acted.predicted_slip_days}d delivery slip → ${preview.task_id} → project +${preview.project_slip_days}d, ${preview.downstream_count} downstream. ${acted.action_detail}`
+          : acted.action_detail,
+      });
+      const pos = await api.fetchPurchaseOrders();
+      if (get().activeProjectId === site) set({ purchaseOrders: pos });
+      void get().loadAnalytics();
+    }
+  },
+
+  /**
+   * Refresh the S-curve and spend analytics. A null response (backend down)
+   * keeps the previous data on screen rather than blanking the band. A *new*
+   * escalation — one the rail has not seen — logs as an activity event, so the
+   * governance moment is announced, not just drawn.
+   */
+  async loadAnalytics() {
+    const site = get().activeProjectId;
+    const [schedule, spend] = await Promise.all([
+      api.fetchScheduleAnalytics(),
+      api.fetchSpendAnalytics(),
+    ]);
+    if (get().activeProjectId !== site) return; // stale by site switch
+    const prev = get().spend?.escalation?.at;
+    set((s) => ({
+      schedule: schedule ?? s.schedule,
+      spend: spend ?? s.spend,
+    }));
+    const esc = spend?.escalation;
+    if (esc && esc.at !== prev) {
+      get().logActivity({
+        source: 'zip',
+        status: 'error',
+        title: 'Governance escalation — spend outrunning the build',
+        detail: esc.message,
+      });
+    }
   },
 
   /**
@@ -427,7 +536,6 @@ export const useJenga = create<JengaState>((set, get) => ({
       selectedTaskId: null,
       selectedZone: null,
       focusOrigin: null,
-      sensors: {},
     });
     // Nothing to re-seed on a site with no project: reloading here would pull
     // the default project's graph onto a pin that has no site behind it.
@@ -478,20 +586,6 @@ export const useJenga = create<JengaState>((set, get) => ({
   openReview: (reportId, taskId) => {
     set({ reviewsOpen: true, reviewTargetId: reportId });
     get().selectTask(taskId, 'schedule');
-  },
-
-  /**
-   * One poll's worth of telemetry. Merged per ticket rather than replacing the
-   * map, so switching selection back and forth keeps the previous sparkline on
-   * screen instead of blanking it for one tick.
-   */
-  async loadSensors(id) {
-    const payload = await api.fetchSensors(id);
-    // A poll in flight when the site changed belongs to the old project. The
-    // strip is already unmounted by then, but writing the reading back would
-    // put the ticket straight into the map the switch just cleared.
-    if (!get().tasks.some((t) => t.id === id)) return;
-    set((s) => ({ sensors: { ...s.sensors, [id]: payload } }));
   },
 
   /** Read the saved identity after hydration; reading it at module init would mismatch the server HTML. */
@@ -636,6 +730,8 @@ export const useJenga = create<JengaState>((set, get) => ({
     ]);
     set({ queue, portal, offline: api.isOffline() });
     if (get().activeProjectId) await refreshSite(get().activeProjectId!);
+    // A denial reworks the schedule; the earned/spend curves must follow.
+    void get().loadAnalytics();
     return null;
   },
 
@@ -706,6 +802,8 @@ export const useJenga = create<JengaState>((set, get) => ({
             cascading: false,
             offline: api.isOffline(),
           });
+          // The slip is now in the schedule; the S-curve must reflect it.
+          void get().loadAnalytics();
         }
       }, i * CASCADE_STEP_MS);
     });
@@ -740,6 +838,8 @@ export const useJenga = create<JengaState>((set, get) => ({
     set((s) => ({
       purchaseOrders: s.purchaseOrders.map((po) => (po.id === poId ? updated : po)),
     }));
+    // The expedite just landed in the event stream; redraw the spend curve.
+    void get().loadAnalytics();
   },
 
   async markPoReceived(poId) {
@@ -791,6 +891,7 @@ export const useJenga = create<JengaState>((set, get) => ({
     if (result.purchase_order && get().activeProjectId === site) {
       const po = result.purchase_order;
       set((s) => ({ purchaseOrders: [po, ...s.purchaseOrders] }));
+      void get().loadAnalytics();
     }
     return result;
   },

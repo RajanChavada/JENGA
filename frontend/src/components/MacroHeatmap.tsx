@@ -1,12 +1,21 @@
 'use client';
 
 import React, { useCallback, useMemo, useState } from 'react';
-import Map, { Marker, Popup, NavigationControl } from 'react-map-gl/maplibre';
+import Map, { Layer, Marker, Popup, NavigationControl, Source } from 'react-map-gl/maplibre';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { motion } from 'framer-motion';
-import { FileUp, Globe, MapPinned, RadioTower, RefreshCw } from 'lucide-react';
+import {
+  Factory,
+  FileUp,
+  Globe,
+  MapPinned,
+  RadioTower,
+  RefreshCw,
+  TriangleAlert,
+  Truck,
+} from 'lucide-react';
 import { useJenga } from '@/store/useJenga';
-import type { Hotzone } from '@/lib/types';
+import type { Hotzone, RouteClosure, RouteRisk } from '@/lib/types';
 
 /* -------------------------------------------------------------------------- */
 /* Severity palette                                                           */
@@ -117,6 +126,98 @@ function ScrapeProgress() {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Supply-line radar                                                          */
+/* -------------------------------------------------------------------------- */
+
+/** Mirrors the backend pass in route_risk.check_routes — what a press does. */
+const ROUTE_STEPS = [
+  { host: '511on.ca', what: 'live closures & incidents via Browserbase' },
+  { host: 'router.project-osrm.org', what: 'tracing vendor → site delivery routes' },
+  { host: 'analysis', what: 'closures on route → CPM slip preview → Zip action' },
+];
+
+function RouteProgress() {
+  return (
+    <ol className="mb-2 flex flex-col gap-1 rounded-md border border-sky-200 bg-sky-50/60 p-2">
+      {ROUTE_STEPS.map((s, i) => (
+        <motion.li
+          key={s.host}
+          initial={{ opacity: 0.35 }}
+          animate={{ opacity: [0.35, 1, 0.35] }}
+          transition={{ duration: 1.4, repeat: Infinity, delay: i * 0.45, ease: 'easeInOut' }}
+          className="flex items-center gap-1.5 text-[10px] text-sky-900"
+        >
+          <Globe size={10} className="shrink-0 text-sky-500" />
+          <span className="font-mono">{s.host}</span>
+          <span className="truncate text-sky-700/70">— {s.what}</span>
+        </motion.li>
+      ))}
+    </ol>
+  );
+}
+
+const RISK_TONE: Record<RouteRisk['risk'], { text: string; chip: string; line: string }> = {
+  high: { text: 'text-red-600', chip: 'border-red-200 bg-red-50 text-red-700', line: '#dc2626' },
+  medium: {
+    text: 'text-amber-600',
+    chip: 'border-amber-200 bg-amber-50 text-amber-700',
+    line: '#d97706',
+  },
+  low: { text: 'text-slate-500', chip: 'border-slate-200 bg-slate-50 text-slate-600', line: '#64748b' },
+  clear: {
+    text: 'text-emerald-600',
+    chip: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    line: '#94a3b8',
+  },
+};
+
+/** One radar result, as a side-panel card. */
+function RouteCard({ route }: { route: RouteRisk }) {
+  const tone = RISK_TONE[route.risk];
+  const worst = route.closures[0];
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-2.5 text-[10px]">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="truncate font-medium text-slate-800">
+          {route.vendor} <span className="text-slate-400">→ site</span>
+        </span>
+        <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] uppercase tracking-wider ${tone.chip}`}>
+          {route.risk}
+        </span>
+      </div>
+      <p className="mt-0.5 text-slate-400">
+        {route.po_id} · {route.material}
+        {!route.geometry_live && ' · straight-line corridor (router offline)'}
+      </p>
+      {route.closures.length > 0 && (
+        <p className="mt-1 leading-relaxed text-slate-600">
+          {route.closures.length} closure{route.closures.length === 1 ? '' : 's'} on route
+          {worst && (
+            <span className="text-slate-500">
+              {' '}
+              · worst: {worst.roadway} — {worst.description.slice(0, 90)}
+            </span>
+          )}
+        </p>
+      )}
+      {route.predicted_slip_days > 0 && route.cpm_preview && (
+        <p className={`mt-1 font-medium ${tone.text}`}>
+          Predicted +{route.predicted_slip_days}d delivery slip → {route.cpm_preview.task_id} →
+          project +{route.cpm_preview.project_slip_days}d ·{' '}
+          {route.cpm_preview.downstream_count} downstream tasks
+        </p>
+      )}
+      {route.action !== 'none' && (
+        <p className="mt-1 rounded border border-sky-200 bg-sky-50 p-1.5 leading-relaxed text-sky-800">
+          <Truck size={10} className="mr-1 inline" />
+          Agent {route.action}: {route.action_detail}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
 /* Component                                                                  */
 /* -------------------------------------------------------------------------- */
 
@@ -134,9 +235,47 @@ export function MacroHeatmap({
   const scraping = useJenga((s) => s.scrapingHotzones);
   const scrapeError = useJenga((s) => s.scrapeError);
   const scrapeHotzones = useJenga((s) => s.scrapeHotzones);
+  const routeRisk = useJenga((s) => s.routeRisk);
+  const checkingRoutes = useJenga((s) => s.checkingRoutes);
+  const checkRoutes = useJenga((s) => s.checkRoutes);
   const [popupId, setPopupId] = useState<string | null>(null);
   /** Set once the user has pressed scrape, so the panel can confirm the outcome. */
   const [scrapedOnce, setScrapedOnce] = useState(false);
+  const [closurePopup, setClosurePopup] = useState<RouteClosure | null>(null);
+
+  /** Route lines as one GeoJSON collection; the layer colours by `risk`. */
+  const routeGeojson = useMemo(() => {
+    if (!routeRisk) return null;
+    return {
+      type: 'FeatureCollection' as const,
+      features: routeRisk.routes.map((r) => ({
+        type: 'Feature' as const,
+        properties: { risk: r.risk },
+        geometry: { type: 'LineString' as const, coordinates: r.geometry },
+      })),
+    };
+  }, [routeRisk]);
+
+  /**
+   * Closure markers, flagged routes only, deduped (parallel routes share the
+   * same 401 works) and capped so a heavy 511 night cannot flood the DOM.
+   */
+  const closureMarkers = useMemo(() => {
+    if (!routeRisk) return [];
+    const seen = new Set<string>();
+    const out: RouteClosure[] = [];
+    for (const r of routeRisk.routes) {
+      if (r.risk === 'clear') continue;
+      for (const c of r.closures) {
+        const key = `${c.lat.toFixed(3)},${c.lng.toFixed(3)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(c);
+        if (out.length >= 24) return out;
+      }
+    }
+    return out;
+  }, [routeRisk]);
 
   const sorted = useMemo(
     () =>
@@ -203,6 +342,101 @@ export function MacroHeatmap({
           attributionControl={false}
         >
           <NavigationControl position="bottom-right" showCompass={false} />
+
+          {/* Delivery routes, under the pins. Colour = risk. */}
+          {routeGeojson && (
+            <Source id="delivery-routes" type="geojson" data={routeGeojson}>
+              <Layer
+                id="delivery-route-lines"
+                type="line"
+                layout={{ 'line-cap': 'round', 'line-join': 'round' }}
+                paint={{
+                  'line-color': [
+                    'match',
+                    ['get', 'risk'],
+                    'high',
+                    RISK_TONE.high.line,
+                    'medium',
+                    RISK_TONE.medium.line,
+                    'low',
+                    RISK_TONE.low.line,
+                    RISK_TONE.clear.line,
+                  ],
+                  'line-width': ['match', ['get', 'risk'], 'high', 3.5, 'medium', 2.5, 1.5],
+                  'line-opacity': 0.75,
+                }}
+              />
+            </Source>
+          )}
+
+          {/* Vendor plants: where each material starts its trip. */}
+          {routeRisk?.routes.map((r) => (
+            <Marker key={`v-${r.po_id}`} latitude={r.vendor_lat} longitude={r.vendor_lng} anchor="center">
+              <span
+                title={`${r.vendor} — ${r.material} (${r.po_id})`}
+                className="flex h-6 w-6 items-center justify-center rounded-md border border-slate-300 bg-white text-slate-600 shadow-sm"
+              >
+                <Factory size={13} />
+              </span>
+            </Marker>
+          ))}
+
+          {/* Closures sitting on a flagged route. */}
+          {closureMarkers.map((c, i) => (
+            <Marker key={`c-${i}`} latitude={c.lat} longitude={c.lng} anchor="center">
+              <button
+                type="button"
+                onClick={() => setClosurePopup(c)}
+                title={`${c.roadway}: ${c.description.slice(0, 120)}`}
+                className={`flex h-5 w-5 items-center justify-center rounded-full border shadow-sm transition-transform hover:scale-125 ${
+                  c.full_closure
+                    ? 'border-red-300 bg-red-100 text-red-700'
+                    : 'border-amber-300 bg-amber-100 text-amber-700'
+                }`}
+              >
+                <TriangleAlert size={11} />
+              </button>
+            </Marker>
+          ))}
+
+          {closurePopup && (
+            <Popup
+              latitude={closurePopup.lat}
+              longitude={closurePopup.lng}
+              closeOnClick={false}
+              onClose={() => setClosurePopup(null)}
+              anchor="bottom"
+              offset={14}
+              closeButton={false}
+              className="jenga-popup"
+              maxWidth="300px"
+            >
+              <div className="rounded-lg border border-slate-200 bg-white p-2.5 shadow-xl">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-slate-900">
+                    {closurePopup.roadway}
+                  </span>
+                  <span
+                    className={`rounded px-1.5 py-0.5 font-mono text-[9px] ${
+                      closurePopup.full_closure
+                        ? 'border border-red-200 bg-red-50 text-red-600'
+                        : 'border border-amber-200 bg-amber-50 text-amber-600'
+                    }`}
+                  >
+                    {closurePopup.full_closure ? 'full closure' : closurePopup.impact || 'restriction'}
+                  </span>
+                </div>
+                <p className="mt-1.5 text-[10px] leading-relaxed text-slate-600">
+                  {closurePopup.description}
+                </p>
+                {closurePopup.lanes_affected && (
+                  <p className="mt-1 font-mono text-[9px] text-slate-400">
+                    lanes: {closurePopup.lanes_affected}
+                  </p>
+                )}
+              </div>
+            </Popup>
+          )}
 
           {sorted.map((h) => (
             <Marker
@@ -321,6 +555,51 @@ export function MacroHeatmap({
 
         {/* While running: the sources Browserbase is actually fetching. */}
         {scraping && <ScrapeProgress />}
+
+        {/* Supply-line radar: delivery routes vs live 511 closures. */}
+        <button
+          type="button"
+          onClick={() => void checkRoutes()}
+          disabled={checkingRoutes}
+          className="mb-2 flex w-full items-center justify-center gap-2 rounded-md border border-slate-900 bg-white px-3 py-2 text-xs font-medium text-slate-900 transition-colors hover:bg-slate-50 disabled:opacity-60"
+        >
+          {checkingRoutes ? (
+            <>
+              <RefreshCw size={13} className="animate-spin" />
+              Tracing routes · scanning 511 closures…
+            </>
+          ) : (
+            <>
+              <Truck size={13} />
+              Check delivery routes
+            </>
+          )}
+        </button>
+
+        {checkingRoutes && <RouteProgress />}
+
+        {routeRisk && !checkingRoutes && (
+          <div className="mb-2">
+            <p
+              className={`mb-2 rounded-md border p-2 text-[10px] leading-relaxed ${
+                routeRisk.source === 'live'
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                  : 'border-amber-200 bg-amber-50 text-amber-800'
+              }`}
+            >
+              {routeRisk.source === 'live'
+                ? `${routeRisk.events_scanned} live 511 events scanned at ${new Date(routeRisk.checked_at).toLocaleTimeString()} — ${routeRisk.routes.filter((r) => r.risk !== 'clear').length} of ${routeRisk.routes.length} delivery routes at risk.`
+                : 'Live 511 feed unreachable — showing a seeded closure so the analysis is still demonstrable.'}
+            </p>
+            <div className="flex flex-col gap-1.5">
+              {[...routeRisk.routes]
+                .sort((a, b) => b.predicted_slip_days - a.predicted_slip_days)
+                .map((r) => (
+                  <RouteCard key={r.po_id} route={r} />
+                ))}
+            </div>
+          </div>
+        )}
 
         {/* Outcome confirmation: what the press actually did, in one line.
             Three honest outcomes: live data landed; the scrape ran but fell

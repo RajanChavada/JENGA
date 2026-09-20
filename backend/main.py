@@ -16,6 +16,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+import analytics
 import browserbase_hotzones
 import cpm_engine
 import db
@@ -23,8 +24,8 @@ import documents
 import impact as impact_module
 import media_store
 import procurement_agent
+import route_risk
 import seed as seed_module
-import sensors
 from integrations import tiger, zip_api
 from integrations.vision import analyse_video
 from integrations.gptzero import FLAG_THRESHOLD
@@ -45,9 +46,9 @@ from schemas import (
     PurchaseOrder,
     QueueItem,
     Report,
-    ScenarioRequest,
-    SensorPayload,
-    SensorScenario,
+    RouteCheckResponse,
+    ScheduleAnalytics,
+    SpendAnalytics,
     StateRequest,
     Task,
     Verdict,
@@ -170,18 +171,18 @@ def _require_project(project_id):
 @asynccontextmanager
 async def lifespan(_app):
     await db.init()
+    # Their seed_all() seeds every portal project; analytics history follows,
+    # since the seeded event history reads task states off the seeded tickets.
+    # No sensor simulator: the cold-snap system was removed with the pace rework.
     await seed_module.seed_all()
-    # After seeding: the simulator emits per active ticket, so it needs tickets.
-    sensor_task = sensors.start()
+    await analytics.seed_history()
     print(
         f"[jenga] storage={db.STORAGE} agent={'live' if AGENT_AVAILABLE else 'stub'} "
-        f"sensors={'on' if sensor_task else 'off'} telemetry={tiger.source()}"
+        f"telemetry={tiger.source()}"
     )
     try:
         yield
     finally:
-        # Simulator first: the pool must outlive the last insert in flight.
-        await sensors.stop(sensor_task)
         await tiger.close()
 
 
@@ -224,22 +225,34 @@ async def scrape_hotzones():
     return await browserbase_hotzones.hotzones(force_live=True)
 
 
-@app.get("/api/sensors/{ticket_id}", response_model=SensorPayload)
-async def get_sensors(ticket_id: str):
-    """Curing telemetry: live `time_bucket` off the hypertable, plus the continuous
-    aggregate. `history` is empty in mock mode — there is no aggregate to read."""
-    return {
-        "live": await tiger.recent_buckets(ticket_id),
-        "history": await tiger.history_5min(ticket_id),
-        "status": await tiger.curing_status(ticket_id),
-    }
+@app.post("/api/routes/check", response_model=RouteCheckResponse)
+async def check_delivery_routes():
+    """Supply-line radar, operator-triggered like the scrape.
+
+    Traces every PO's vendor→site route (OSRM), pulls Ontario 511's live
+    closure feed through Browserbase, flags events within ~500 m of a route,
+    previews the CPM impact of the predicted delivery slip, and auto-expedites
+    via Zip when the slip would move the schedule. Each fallback is labelled in
+    the payload — `source: "seeded"` means the live feed was unreachable.
+    """
+    return await route_risk.check_routes()
 
 
-@app.post("/api/sensors/scenario/{ticket_id}", response_model=SensorScenario)
-async def set_sensor_scenario(ticket_id: str, body: ScenarioRequest):
-    """Demo control: drop a ticket into a cold snap, or bring it back."""
-    sensors.set_scenario(ticket_id, body.mode)
-    return {"ticket_id": ticket_id, "mode": sensors.get_scenario(ticket_id)}
+@app.get("/api/analytics/schedule", response_model=ScheduleAnalytics)
+async def get_schedule_analytics():
+    """The earned-schedule S-curve: planned vs verified work, SPI, projected finish.
+
+    Bucketed by `time_bucket` on the Tiger Data hypertable in live mode, and by
+    its bucket-for-bucket mock otherwise.
+    """
+    return await analytics.schedule_analysis()
+
+
+@app.get("/api/analytics/spend", response_model=SpendAnalytics)
+async def get_spend_analytics():
+    """Committed spend vs the site budget, plus the governance escalation state."""
+    await analytics.check_escalation()
+    return await analytics.spend_analysis()
 
 
 @app.post("/api/documents/parse", response_model=ParsedDocument)
@@ -359,18 +372,7 @@ async def verify(task_id: str, body: VerifyRequest, strict: bool = True):
     flagged = bool(gz.get("flagged")) or (
         isinstance(score, (int, float)) and score > FLAG_THRESHOLD
     )
-    # ...except over the arbiter's rule 0. This gate exists to stop a generated
-    # narrative auto-approving; it has no business demoting a dispute the site's
-    # own thermometer raised. A measurement outranks an authorship heuristic, and
-    # the whole point of putting the sensor rule first is lost if the route
-    # quietly puts the gate back in front of it.
-    #
-    # Keyed on the deciding rule, not on (DISPUTED and cold). Every active ticket
-    # streams telemetry, so a cold-snapped one would otherwise exempt a dispute
-    # that rule 0 played no part in — a contradicted photograph, say, on a claim
-    # with no cure/pour/set word in it. The exemption belongs to rule 0 alone.
-    sensor_disputed = verdict.get("branch") == "sensor_conflict"
-    if strict and flagged and not sensor_disputed:
+    if strict and flagged:
         verdict["status"] = "UNDER_REVIEW"
         gz["flagged"] = True
         # A hold this gate creates owes the same two invariants the arbiter's
@@ -422,6 +424,18 @@ async def verify(task_id: str, body: VerifyRequest, strict: bool = True):
     )
     await db.update_task(task_id, state="under_review")
 
+    # Land the verdict in the earned-schedule stream: an approval earns the
+    # task's days; anything else earns nothing but is still on the record for
+    # trend analysis. This is the write that keeps the S-curve alive.
+    event = {"APPROVED": "work_verified", "DISPUTED": "work_disputed"}.get(
+        verdict["status"], "work_review"
+    )
+    await tiger.record_event(
+        task_id,
+        event,
+        float(task["duration_days"]) if event == "work_verified" else 0.0,
+    )
+
     # Material shortage buried in the narrative -> act on the purchase order.
     try:
         action = await detect_material_shortage(
@@ -452,6 +466,9 @@ async def verify(task_id: str, body: VerifyRequest, strict: bool = True):
             delivery_date=new_date,
             last_action=note,
         )
+        # The lifecycle marker for the timeline diamonds. Value 0: an expedite
+        # re-promises the same money, so it must not double into committed spend.
+        await tiger.record_event(action["po_id"], "po_expedited", 0.0)
 
     return verdict
 
@@ -554,10 +571,12 @@ async def act_on_purchase_order(po_id: str, body: POActionRequest):
         updated = await db.update_po(
             po_id, status="rescheduled", delivery_date=new_date, last_action=note
         )
+        await tiger.record_event(po_id, "po_expedited", 0.0)
     elif body.action == "receive":
         updated = await db.update_po(
             po_id, status="received", last_action="Marked received on site."
         )
+        await tiger.record_event(po_id, "po_delivered", 0.0)
     else:  # link
         if not body.task_id:
             raise HTTPException(422, "link requires a task_id")
@@ -592,6 +611,29 @@ async def agent_create_procurement(body: AgentProcurementRequest):
     )
     if result.get("purchase_order"):
         await db.add_purchase_order(result["purchase_order"])
+
+    # Land the commitment in the spend stream, then run the governance check:
+    # this creation may be the individually-compliant PO that tips cumulative
+    # spend over the policy line while verified work lags. If it does, the
+    # escalation joins the agent's own trace — the agent reports itself.
+    await tiger.record_event(
+        result.get("po_number") or "PO", "po_created", float(result.get("amount") or 0.0)
+    )
+    try:
+        escalation = await analytics.check_escalation()
+    except Exception as exc:  # governance must never break procurement
+        print(f"[procurement] escalation check failed ({exc})")
+        escalation = None
+    if escalation:
+        result["escalation"] = escalation
+        result.setdefault("steps", []).append(
+            {
+                "node": "governance",
+                "title": "Governance check",
+                "detail": escalation["message"],
+                "signal": "bad",
+            }
+        )
     return result
 
 
@@ -606,6 +648,8 @@ async def reset(project_id: str = db.DEFAULT_PROJECT_ID):
     """Re-seed one portal project. Reset is scoped: other projects' rows survive."""
     _require_project(project_id)
     await seed_module.seed(project_id)
+    # The event stream is a claim about the seeded state, so it resets with it.
+    await analytics.reset()
     return {"ok": True, "project_id": project_id}
 
 
