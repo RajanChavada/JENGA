@@ -514,22 +514,47 @@ export const useJenga = create<JengaState>((set, get) => ({
     set({ role });
     persistIdentity(get());
     await get().refreshPortal();
+    const { portal } = get();
+    if (portal && portal.projects.length > 0) {
+      const active = get().activeProjectId;
+      const projectInScope = portal.projects.some((p) => p.id === active);
+      if (!projectInScope) {
+        await get().focusProject(portal.projects[0]);
+      }
+    }
   },
   async setOwner(ownerId) {
     set({ ownerId });
     persistIdentity(get());
     await get().refreshPortal();
+    const { portal } = get();
+    if (portal && portal.projects.length > 0) {
+      const active = get().activeProjectId;
+      const projectInScope = portal.projects.some((p) => p.id === active);
+      if (!projectInScope) {
+        await get().focusProject(portal.projects[0]);
+      }
+    }
   },
   async setCompany(companyId) {
     set({ companyId });
     persistIdentity(get());
     await get().refreshPortal();
+    const { portal } = get();
+    if (portal && portal.projects.length > 0) {
+      const active = get().activeProjectId;
+      const projectInScope = portal.projects.some((p) => p.id === active);
+      if (!projectInScope) {
+        await get().focusProject(portal.projects[0]);
+      }
+    }
   },
 
   /**
-   * Reload everything the current identity can see, and put the graph on one of
-   * its projects if the one on screen belongs to someone else. A site the portal
-   * does not know (a hotzone with no project) is left alone.
+   * Reload everything the current identity can see without overriding the project
+   * the operator is already looking at. Identity-only switches call
+   * `focusProject()` after this completes when the current site falls outside the
+   * new scope. This keeps a project selection from being reset by a portal refresh.
    */
   async refreshPortal() {
     const { role, ownerId, companyId } = get();
@@ -542,10 +567,8 @@ export const useJenga = create<JengaState>((set, get) => ({
     set({ portal, queue, offline: api.isOffline() });
 
     const active = get().activeProjectId;
-    const mine = portal.projects.some((p) => p.id === active);
-    if (!mine && portal.projects.length > 0 && (role === 'contractor' || active !== null)) {
-      await get().focusProject(portal.projects[0]);
-    } else if (active && mine) {
+    const mine = active ? portal.projects.some((p) => p.id === active) : false;
+    if (active && mine) {
       await refreshSite(active);
     }
   },

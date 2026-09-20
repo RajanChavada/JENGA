@@ -1,0 +1,46 @@
+{
+  "project": "Ossington Relief Tunnel — Combined Sewer Overflow Tunnel",
+  "blueprint": { "width": 1200, "height": 800, "src": "/blueprint.svg" },
+  "tasks": [
+    { "id": "T-201", "name": "Launch Shaft Piling",       "zone": "south_platform", "x": 160, "y": 540, "duration_days": 6,  "state": "verified", "due_day": 6,  "spec_text": "Install secant pile wall for launch shaft, 18m diameter. Pile embedment 3m into bedrock. Verticality tolerance 1:200." },
+    { "id": "T-202", "name": "Launch Shaft Excavation",   "zone": "south_platform", "x": 380, "y": 540, "duration_days": 8,  "state": "verified", "due_day": 14, "spec_text": "Excavate launch shaft to 22m depth inside piled wall. Continuous dewatering required. Lateral support at 3m stages per shoring drawing." },
+    { "id": "T-203", "name": "Retrieval Shaft Piling",    "zone": "north_platform", "x": 160, "y": 260, "duration_days": 5,  "state": "verified", "due_day": 5,  "spec_text": "Install secant pile wall for retrieval shaft, 14m diameter. Pile embedment 3m into bedrock. Verticality tolerance 1:200." },
+    { "id": "T-204", "name": "Retrieval Shaft Excavation","zone": "north_platform", "x": 380, "y": 260, "duration_days": 7,  "state": "verified", "due_day": 12, "spec_text": "Excavate retrieval shaft to 19m depth inside piled wall. Continuous dewatering required. Base slab 600mm mud mat prior to breakthrough." },
+    { "id": "T-205", "name": "Ground Freezing",           "zone": "track_bed",      "x": 160, "y": 370, "duration_days": 6,  "state": "verified", "due_day": 20, "spec_text": "Install ground-freeze array ahead of TBM launch eye, 24 freeze pipes. Target -10C soil temperature sustained 14 days before breakout." },
+    { "id": "T-206", "name": "TBM Assembly",               "zone": "south_platform", "x": 600, "y": 540, "duration_days": 9,  "state": "verified", "due_day": 23, "spec_text": "Lower and assemble 4.2m EPB tunnel boring machine in launch shaft. Cutterhead torque test and seal pressure check required before launch." },
+    { "id": "T-207", "name": "TBM Launch Seal",            "zone": "track_bed",      "x": 340, "y": 370, "duration_days": 3,  "state": "verified", "due_day": 26, "spec_text": "Install launch seal ring and thrust frame. Verify seal pressure holds 3 bar for 24 hours before breaking through frozen ground." },
+    { "id": "T-208", "name": "Primary Bore Drive",         "zone": "track_bed",      "x": 560, "y": 370, "duration_days": 18, "state": "active",   "due_day": 44, "spec_text": "Drive 4.2m diameter tunnel, launch shaft to retrieval shaft, 640m. Advance rate logged per ring. Face pressure per geotechnical baseline report." },
+    { "id": "T-209", "name": "Segmental Lining",           "zone": "track_bed",      "x": 780, "y": 370, "duration_days": 12, "state": "under_review", "due_day": 56, "spec_text": "Erect precast concrete segmental lining, 6+1 ring configuration, 1.5m ring width. Gasket-sealed joints, watertightness test every 20th ring." },
+    { "id": "T-210", "name": "Cross-Passage Excavation",   "zone": "track_bed",      "x": 780, "y": 440, "duration_days": 6,  "state": "disputed", "due_day": 50, "spec_text": "Excavate two emergency cross-passages at chainage 210m and 430m per NFPA 130. Ground treatment required ahead of each opening." },
+    { "id": "T-211", "name": "Drop Shaft Sinking",         "zone": "escalator_well", "x": 960, "y": 440, "duration_days": 7,  "state": "active",   "due_day": 27, "spec_text": "Sink drop shaft to intercept combined sewer overflow, 28m depth, 6m diameter. Caisson sinking method, verticality logged every 2m." },
+    { "id": "T-212", "name": "Drop Shaft Lining",          "zone": "escalator_well", "x": 960, "y": 260, "duration_days": 5,  "state": "pending",  "due_day": 32, "spec_text": "Cast in-place concrete lining for drop shaft, 400mm thickness, 35 MPa. Waterstop at every construction joint." },
+    { "id": "T-213", "name": "Headworks Structure",        "zone": "mezzanine",      "x": 480, "y": 120, "duration_days": 10, "state": "pending",  "due_day": 66, "spec_text": "Construct headworks chamber housing flow control gates and screening equipment. 40 MPa concrete, watertight per CSA A23.1 Table 3 exposure." },
+    { "id": "T-214", "name": "Flow Control Fit-Out",       "zone": "mezzanine",      "x": 700, "y": 120, "duration_days": 8,  "state": "pending",  "due_day": 74, "spec_text": "Install sluice gates, flow meters and SCADA instrumentation in headworks chamber. Commissioning by instrumentation subcontractor." },
+    { "id": "T-215", "name": "Commissioning & Flow Test",  "zone": "mezzanine",      "x": 920, "y": 120, "duration_days": 6,  "state": "pending",  "due_day": 80, "spec_text": "Run wet-weather flow simulation through full tunnel length. Verify storage capacity and gate response against design storm event." }
+  ],
+  "edges": [
+    { "source": "T-201", "target": "T-202" },
+    { "source": "T-203", "target": "T-204" },
+    { "source": "T-202", "target": "T-205" },
+    { "source": "T-202", "target": "T-206" },
+    { "source": "T-205", "target": "T-207" },
+    { "source": "T-206", "target": "T-207" },
+    { "source": "T-207", "target": "T-208" },
+    { "source": "T-204", "target": "T-208" },
+    { "source": "T-208", "target": "T-209" },
+    { "source": "T-208", "target": "T-210" },
+    { "source": "T-205", "target": "T-211" },
+    { "source": "T-211", "target": "T-212" },
+    { "source": "T-209", "target": "T-213" },
+    { "source": "T-210", "target": "T-213" },
+    { "source": "T-212", "target": "T-213" },
+    { "source": "T-213", "target": "T-214" },
+    { "source": "T-214", "target": "T-215" }
+  ],
+  "purchase_orders": [
+    { "id": "PO-9101", "material": "Precast Tunnel Lining Segments", "quantity": "180 rings", "vendor": "Vector Construction",         "delivery_date": "2026-09-25", "status": "confirmed", "linked_task": "T-209", "last_action": null },
+    { "id": "PO-9102", "material": "TBM Cutter Head Tools",          "quantity": "48 units",  "vendor": "Herrenknecht Canada",         "delivery_date": "2026-09-18", "status": "confirmed", "linked_task": "T-208", "last_action": null },
+    { "id": "PO-9103", "material": "Tail Grout",                     "quantity": "60 tonnes", "vendor": "BASF Construction Chemicals", "delivery_date": "2026-09-20", "status": "confirmed", "linked_task": "T-209", "last_action": null },
+    { "id": "PO-9104", "material": "Caisson Sinking Shoes",          "quantity": "12 units",  "vendor": "Con-Cast Pipe",               "delivery_date": "2026-09-22", "status": "confirmed", "linked_task": "T-211", "last_action": null }
+  ]
+}

@@ -103,10 +103,6 @@ export function Timeline() {
           Schedule · baseline vs current
         </h3>
 
-        <span className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-[10px] text-slate-600">
-          {projectDuration}d
-        </span>
-
         {slipped && (
           <span className="flex items-center gap-1 rounded border border-red-300 bg-red-50 px-1.5 py-0.5 font-mono text-[10px] text-red-700">
             <AlertTriangle size={10} />+{slip}d vs baseline {baselineDuration}d
@@ -142,7 +138,7 @@ export function Timeline() {
           >
             {primary.impact.project_slipped_days > 0
               ? `+${primary.impact.project_slipped_days}d ${primary.kind === 'pending' ? 'if denied' : 'from denial'} → ${formatDate(primary.impact.predicted_finish_date)}`
-              : `absorbed by float (${primary.kind === 'pending' ? 'if denied' : 'denied'})`}
+              : `absorbed by leeway (${primary.kind === 'pending' ? 'if denied' : 'denied'})`}
             {primary.impact.days_past_deadline > 0 && ` · ${primary.impact.days_past_deadline}d past deadline`}
           </span>
         )}
@@ -151,7 +147,7 @@ export function Timeline() {
       {rows.length === 0 ? (
         <p className="p-3 text-[11px] leading-relaxed text-slate-400">
           No work packages loaded. Once the graph arrives every package is drawn against the
-          project schedule, with its float tail and its baseline position.
+          project schedule, with its leeway and its baseline position.
         </p>
       ) : (
         <>
@@ -263,20 +259,20 @@ export function Timeline() {
           </div>
 
           <footer className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-slate-200 px-3 py-1.5 text-[9px] text-slate-400">
-            <Swatch className="bg-slate-400">current</Swatch>
+            <Swatch className="bg-slate-400">current plan</Swatch>
             <Swatch className="bg-slate-300 [background-image:repeating-linear-gradient(45deg,#94a3b866_0_3px,transparent_3px_6px)]">
-              float tail
+              available leeway
             </Swatch>
-            <Swatch className="bg-slate-300">baseline (moved only)</Swatch>
-            <Swatch className="bg-red-500">critical · zero float</Swatch>
+            <Swatch className="bg-slate-300">baseline / unchanged</Swatch>
+            <Swatch className="bg-red-500">critical path · zero leeway</Swatch>
             <Swatch className="bg-red-400/60 [background-image:repeating-linear-gradient(45deg,#dc2626aa_0_3px,transparent_3px_6px)]">
-              predicted if denied
+              projected if denied
             </Swatch>
             <span className="flex items-center gap-1">
               <span className="rounded border border-amber-300 bg-amber-100 px-1 text-[8px] text-amber-800">Review</span>
               update awaiting you
             </span>
-            <span>ticks = stage transitions</span>
+            <span>ticks = stage handoffs</span>
           </footer>
         </>
       )}

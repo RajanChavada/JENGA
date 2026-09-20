@@ -73,7 +73,7 @@ export function AttributionLedger() {
                       <span className="font-mono text-xs text-red-600">+{a.slip_days}d</span>
                     </div>
                     <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] text-slate-500">
-                      <span>Float consumed</span>
+                      <span>Leeway consumed</span>
                       <span className="text-right text-slate-700">{a.float_consumed}d</span>
                       <span>Downstream</span>
                       <span className="text-right text-slate-700">

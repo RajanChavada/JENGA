@@ -22,8 +22,14 @@ PO_FIELDS = (
 )
 
 
-def load_seed():
-    return json.loads(SEED_FILE.read_text())
+def load_seed(project_id=db.DEFAULT_PROJECT_ID):
+    """Every project loads Eglinton's DAG unless its portal.json entry names its
+    own `tasks_file` — Ossington's does, so the default project and any future
+    entry without one still share the one file with no change here."""
+    project = portal_project(project_id)
+    tasks_file = project.get("tasks_file") if project else None
+    path = DATA_DIR / tasks_file if tasks_file else SEED_FILE
+    return json.loads(path.read_text())
 
 
 def load_portal():
@@ -45,7 +51,7 @@ def base_id(task_id):
 
 
 async def seed(project_id=db.DEFAULT_PROJECT_ID):
-    raw = load_seed()
+    raw = load_seed(project_id)
     sid = lambda i: scoped_id(project_id, i) if i else i  # noqa: E731
     project = portal_project(project_id)
     await db.reset(

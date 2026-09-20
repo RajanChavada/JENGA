@@ -94,6 +94,40 @@
           "reason": "Aggregate stock depleted at staging area; downstream placement blocked without resupply."
         }
       }
+    },
+    {
+      "id": "SUB-06",
+      "beat": 8,
+      "label": "Ossington — authentic human report, should pass",
+      "task_id": "T-208",
+      "report_text": "Sept 19. Ring 340 of 427 placed on the primary bore drive, chainage 305m. Face pressure holding steady at 2.1 bar, matches the geotechnical baseline for this reach. Advance rate 11 rings yesterday. Minor cutter wear noted, swapping two disc cutters during tomorrow's scheduled stop.",
+      "image": "data/images/t208_bore_progress.jpg",
+      "transcript": null,
+      "expected": {
+        "status": "APPROVED",
+        "confidence": 0.88,
+        "gptzero": { "ai_probability": 0.06, "flagged": false },
+        "vision": { "observation": "TBM ring build visible at stated chainage marker, segments seated with consistent gasket compression. Advance consistent with logged ring count.", "matches_claim": true },
+        "reasoning": "Report is human-authored (6% AI probability). Visual evidence is consistent with the claimed ring count and chainage. Face pressure figure matches the geotechnical baseline for this reach.",
+        "actionable_request": null
+      }
+    },
+    {
+      "id": "SUB-07",
+      "beat": 9,
+      "label": "Ossington — ambiguous evidence, agent must refuse to decide",
+      "task_id": "T-211",
+      "report_text": "Sept 19. Drop shaft sinking at 21m of 28m target depth. Caisson tracking true, verticality within tolerance at last reading. Ready to continue tomorrow.",
+      "image": "data/images/t211_shaft_flooded.jpg",
+      "transcript": null,
+      "expected": {
+        "status": "UNDER_REVIEW",
+        "confidence": 0.35,
+        "gptzero": { "ai_probability": 0.09, "flagged": false },
+        "vision": { "observation": "Shaft interior below approximately 14m is obscured by standing groundwater in the frame; caisson depth and verticality cannot be resolved past the waterline.", "matches_claim": null },
+        "reasoning": "Report is human-authored and internally plausible. However the visual evidence is insufficient to verify the claim: the drop shaft photo shows standing water obscuring the caisson below roughly 14m, well short of the claimed 21m depth. The agent declines to rule in either direction rather than infer depth from an occluded frame.",
+        "actionable_request": "Request a dewatered inspection or sonar depth sounding at the drop shaft, blueprint coordinates X:960 Y:440. Confirm caisson depth and verticality below the waterline before this reading is accepted."
+      }
     }
   ],
 

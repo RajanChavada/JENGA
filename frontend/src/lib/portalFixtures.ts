@@ -15,9 +15,9 @@ import type {
 
 /**
  * Offline mirror of the portal routes, so the role views still work with the
- * backend down (`NEXT_PUBLIC_USE_FIXTURES=1`). Every project shares the one
- * fixture schedule — the same caveat `fetchGraph` documents — with its own
- * task states and reports, held in module memory for the session.
+ * backend down (`NEXT_PUBLIC_USE_FIXTURES=1`). Each project loads its own
+ * fixture schedule (`fx.graph(projectId)`) with its own task states and
+ * reports, held in module memory for the session.
  */
 
 const tasksByProject = new Map<string, Task[]>();
@@ -35,7 +35,7 @@ function withBlocking(tasks: Task[]): Task[] {
 function stored(projectId: string): Task[] {
   let list = tasksByProject.get(projectId);
   if (!list) {
-    list = fx.graph().tasks;
+    list = fx.graph(projectId).tasks;
     tasksByProject.set(projectId, list);
   }
   return list;
@@ -117,7 +117,7 @@ export function queue(ownerId: string): QueueItem[] {
 function denialImpact(projectId: string, startDate: string, report: Report): Impact {
   return predictDenial(
     stored(projectId),
-    fx.graph().edges,
+    fx.graph(projectId).edges,
     report.task_id,
     report.verdict,
     startDate,
@@ -178,7 +178,7 @@ export function decide(reportId: string, decision: 'approve' | 'deny', note?: st
   setState(report.project_id, report.task_id, approve ? 'verified' : 'active');
 
   if (approve) {
-    const edges = fx.graph().edges;
+    const edges = fx.graph(report.project_id).edges;
     const state = new Map(stored(report.project_id).map((t) => [t.id, t.state]));
     for (const e of edges.filter((e) => e.source === report.task_id)) {
       const parents = edges.filter((p) => p.target === e.target).map((p) => p.source);

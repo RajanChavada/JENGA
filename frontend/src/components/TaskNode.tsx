@@ -77,7 +77,7 @@ function TaskNodeImpl({ data }: NodeProps) {
                   <span className="font-mono text-[9px] text-red-600">CRIT</span>
                 ) : (
                   <span className="font-mono text-[9px] opacity-50">
-                    {task.total_float}d float
+                    {task.total_float}d leeway
                   </span>
                 )}
               </div>

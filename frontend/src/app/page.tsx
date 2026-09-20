@@ -183,6 +183,10 @@ function SiteTab() {
           ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName))
       )
         return;
+      // An open <dialog> (task detail, report preview) already closes itself on
+      // Escape; let that happen on its own keypress instead of also dropping
+      // the selection underneath it.
+      if (document.querySelector("dialog[open]")) return;
       clearFocus();
     };
     window.addEventListener("keydown", onKey);

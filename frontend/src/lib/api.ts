@@ -58,15 +58,14 @@ async function call<T>(
 }
 
 /**
- * One site's graph. The fixture fallback is the default project's, which is the
- * only one it has — an offline drill-down into another site would show Eglinton
- * West's work packages under its name, so callers past the default should treat
- * the offline path as unsupported rather than trusted.
+ * One site's graph. Offline, `tasks` comes from `local.tasksFor` — the project's
+ * own fixture schedule with its in-session task states — while edges/critical
+ * path/duration come straight from that project's seed, so the two always agree.
  */
 export function fetchGraph(projectId?: string): Promise<GraphResponse> {
   const q = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
   return call(`/api/graph${q}`, undefined, () => {
-    const g = fx.graph();
+    const g = fx.graph(projectId);
     return projectId ? { ...g, tasks: local.tasksFor(projectId) } : g;
   });
 }
