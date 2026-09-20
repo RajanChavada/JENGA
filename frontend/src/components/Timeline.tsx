@@ -11,6 +11,8 @@ import type { Task } from '@/lib/types';
 
 /** Label gutter, px. Everything right of this is the day axis. */
 const LABEL_W = 176;
+/** Right gutter, px, so the last day's label isn't cut off at the panel edge. */
+const PAD_R = 24;
 const ROW_H = 26;
 /** Current bar occupies 4..16; the baseline hairline sits at 18..21 beneath it. */
 const BAR_TOP = 4;
@@ -156,7 +158,7 @@ export function Timeline() {
           {/* Day axis. Kept out of the scroll body so it stays put vertically; the
               track is percentage-based so it never drifts out of column. */}
           <div className="relative shrink-0 border-b border-slate-200 pb-1 pt-1.5">
-            <div className={`relative ${primary ? 'h-6' : 'h-3.5'}`} style={{ marginLeft: LABEL_W }}>
+            <div className={`relative ${primary ? 'h-6' : 'h-3.5'}`} style={{ marginLeft: LABEL_W, marginRight: PAD_R }}>
               {gridDays.map((d) => (
                 <span
                   key={d}
@@ -166,14 +168,6 @@ export function Timeline() {
                   {d}d
                 </span>
               ))}
-              <span
-                className={`absolute top-0 -translate-x-full pr-1 font-mono text-[9px] ${
-                  slipped ? 'text-red-600' : 'text-slate-500'
-                }`}
-                style={{ left: `${pct(projectDuration)}%` }}
-              >
-                finish
-              </span>
               {primary && (
                 <span
                   className={`absolute top-2.5 -translate-x-full whitespace-nowrap pr-1 font-mono text-[9px] ${
@@ -192,8 +186,8 @@ export function Timeline() {
               {/* Gridlines, the completion marker and the slip band all live in one
                   overlay so they span every row and scroll with them. */}
               <div
-                className="pointer-events-none absolute inset-y-0 right-0 z-10"
-                style={{ left: LABEL_W }}
+                className="pointer-events-none absolute inset-y-0 z-10"
+                style={{ left: LABEL_W, right: PAD_R }}
               >
                 {gridDays.map((d) => (
                   <div
@@ -385,7 +379,7 @@ function Row({
         </span>
       </div>
 
-      <div className="relative h-full flex-1">
+      <div className="relative h-full flex-1" style={{ marginRight: PAD_R }}>
         {/* Slack the task can absorb before it starts pushing the finish date. */}
         {t.total_float > 0 && (
           <motion.div

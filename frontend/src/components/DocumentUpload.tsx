@@ -36,7 +36,7 @@ export function DocumentUpload({
    * it. Omitted on a site with no graph yet: there is nothing to verify a
    * report against, so that half of the component is not offered at all.
    */
-  onReportText?: (text: string, filename: string) => void;
+  onReportText?: (text: string, filename: string, mediaUrl: string | null) => void;
   /** Label of the button that hands the extracted text to `onReportText`. */
   reportActionLabel?: string;
   /** Which tab opens first. Onboarding a new site starts on the blueprint. */
@@ -276,7 +276,7 @@ export function DocumentUpload({
             </p>
             {onReportText && (
               <button
-                onClick={() => onReportText(doc.text, doc.filename)}
+                onClick={() => onReportText(doc.text, doc.filename, doc.media_url)}
                 className="mt-2 rounded-md bg-slate-900 px-2.5 py-1 text-[11px] font-medium text-white transition-colors hover:bg-slate-800"
               >
                 {reportActionLabel}

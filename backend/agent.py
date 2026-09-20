@@ -305,6 +305,15 @@ async def _decide(state: VerifyState) -> dict:
     # Strict mode lets the AI gate override every other source; lenient mode
     # demotes it to an advisory line appended once the other rules have run.
     strict = bool(state.get("strict", True))
+    # The recommendation is meant to weigh both axes — how AI-generated the
+    # report reads, and how well the evidence matches the claim — even on
+    # branches where the score wasn't the deciding factor. `ai_gate` and
+    # `approved` below already name both signals in their own prose; this is
+    # appended to the other three so no branch reports on the evidence alone.
+    authorship_note = (
+        f"Separately, the written report scores {ai_prob:.0%} on GPTZero's AI-authorship check, "
+        f"{'above' if ai_flagged else 'well under'} the {FLAG_THRESHOLD:.0%} threshold."
+    )
 
     coords = f"blueprint coordinates X:{task.get('x')} Y:{task.get('y')}"
     where = f"{task.get('name', task_id)} in {str(task.get('zone', '')).replace('_', ' ')}"
@@ -406,12 +415,12 @@ async def _decide(state: VerifyState) -> dict:
         if isinstance(canned.get("confidence"), (int, float)):
             confidence = float(canned["confidence"])
 
-    # Lenient mode's advisory. Appended after the canned override so that wording
-    # cannot swallow it, and only when the gate would have fired in strict mode.
-    # Reasoning only — the status, confidence and request are left as the
+    # Append the authorship note for the branches that don't already name it in
+    # their own prose. After the canned override so demo wording cannot swallow
+    # it. Reasoning only — status, confidence and request are left as the
     # surviving rule set them.
-    if ai_flagged and not strict:
-        reasoning = f"{reasoning.rstrip()} GPTZero advisory: {ai_prob:.0%} AI"
+    if branch in ("sensor_conflict", "ambiguity_rule", "contradiction"):
+        reasoning = f"{reasoning.rstrip()} {authorship_note}"
 
     if status == "UNDER_REVIEW":
         confidence = min(confidence, 0.49)

@@ -52,22 +52,36 @@ interface Verdict {
   task_id: string;
   status: 'APPROVED'|'DISPUTED'|'UNDER_REVIEW';
   confidence: number;                 // 0..1
-  reasoning: string;
+  reasoning: string;                  // one recommendation, fused from all sources —
+                                      // always names both the GPTZero score and the
+                                      // evidence's match to the claim, whichever rule decided
   actionable_request: string | null;  // set when UNDER_REVIEW
   gptzero: { ai_probability: number; flagged: boolean };
   vision: {
     observation: string;
-    matches_claim: boolean | null;  // false = image CONTRADICTS the claim -> DISPUTED
-                                    // null  = image CANNOT ESTABLISH anything -> UNDER_REVIEW
+    matches_claim: boolean | null;  // false = evidence CONTRADICTS the claim -> DISPUTED
+                                    // null  = evidence CANNOT ESTABLISH anything -> UNDER_REVIEW
                                     // these two are not the same and must not be collapsed
     confidence: number;             // 0..1, vision's own confidence, distinct from top-level
+    media_type: 'photo'|'video'|null;  // which medium was actually reviewed;
+                                       // null only on the pipeline-error fallback path
   };
-  evidence: {                         // the 4 VerdictPanel columns
+  evidence: {                         // spec / claim / visual / historical, one row each
     spec: string;
     claim: string;
     visual: string;
     historical: string;
   };
+  sensor: SensorStatus | null;        // curing telemetry read by rule 0; null on the
+                                      // pipeline-error fallback path
+  trace: { node: string; title: string; detail: string;
+           signal: 'ok'|'warn'|'bad'|'info' }[];  // step-by-step read of all five nodes
+}
+
+interface SensorStatus {
+  avg_temp_c: number | null; min_temp_c: number | null; samples: number;
+  below_threshold: boolean; threshold_c: number; min_samples: number;
+  window_s: number; window_requested_s: number; source: 'tiger'|'mock';
 }
 
 interface AttributionEntry {
@@ -87,7 +101,10 @@ interface AttributionEntry {
 | Method | Path | Body | Returns |
 |---|---|---|---|
 | `GET` | `/api/graph` | — | `{ tasks: Task[], edges: {source,target}[], critical_path: string[], project_duration: number }` |
-| `POST` | `/api/tasks/{id}/verify` | `{ report_text, image_base64?, transcript? }` | `Verdict` |
+| `POST` | `/api/tasks/{id}/video-evidence` | multipart `file` + `report_text?` | `{ media_url: string, finding: object }` — analyzes the video ahead of `/verify` so the following call doesn't re-run Gemini |
+| `GET` | `/api/media/{id}` | — | the stored file (video, photo, or uploaded report document) |
+| `POST` | `/api/documents/parse` | multipart `file` | `{ filename, kind, char_count, text, preview, media_url }` — extracted text plus a playback/preview URL for the original bytes |
+| `POST` | `/api/tasks/{id}/verify` | `{ report_text?, image_base64?, image_mime?, transcript?, video_finding?, media_url?, report_url?, report_filename? }` | `Verdict` |
 | `POST` | `/api/tasks/{id}/dispute` | `{ delay_days: int, reason: str }` | `{ tasks: Task[], critical_path: string[], attribution: AttributionEntry, project_slipped_days: int }` |
 | `POST` | `/api/tasks/{id}/state` | `{ state: TaskState }` | `Task` |
 | `GET` | `/api/attributions` | — | `AttributionEntry[]` |
@@ -173,6 +190,9 @@ interface Impact {
 ```ts
 interface Report {
   id: string; task_id: string; project_id: string; report_text: string;
+  media_url: string | null;             // playback URL for the attached video or photo
+  report_url: string | null;            // preview URL for an uploaded report document
+  report_filename: string | null;       // that document's original filename
   verdict: Verdict | null;              // null in the contractor view
   impact: Impact | null;                // set on denial; reduced in the contractor view
   owner_decision: 'pending'|'approved'|'rejected';

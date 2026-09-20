@@ -2,10 +2,10 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { X } from 'lucide-react';
+import { AlertTriangle, FileText, X } from 'lucide-react';
 import { displayId, formatDate } from '@/lib/format';
 import { mediaUrl } from '@/lib/api';
-import type { Impact, QueueItem, VerdictStatus } from '@/lib/types';
+import type { Impact, QueueItem, Verdict, VerdictStatus } from '@/lib/types';
 import { useJenga } from '@/store/useJenga';
 
 const AI_CHIP: Record<VerdictStatus, string> = {
@@ -23,8 +23,9 @@ export function ReviewsButton() {
   return (
     <button
       onClick={() => setOpen(!open)}
+      disabled={queue.length === 0}
       aria-pressed={open}
-      className="flex items-center gap-1.5 rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-slate-800"
+      className="flex items-center gap-1.5 rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-slate-900"
     >
       Reviews
       <span
@@ -61,16 +62,9 @@ export function ReviewsRail() {
           animate={{ x: 0, opacity: 1 }}
           exit={{ x: 40, opacity: 0 }}
           transition={{ duration: 0.18, ease: 'easeOut' }}
-          className="flex h-full w-[420px] shrink-0 flex-col border-l border-slate-200 bg-white"
+          className="flex h-full w-[560px] shrink-0 flex-col border-l border-slate-200 bg-white"
         >
-          <div className="flex shrink-0 items-start justify-between border-b border-slate-200 px-4 py-3">
-            <div>
-              <h2 className="text-sm font-semibold text-slate-900">Updates awaiting review</h2>
-              <p className="text-[11px] text-slate-500">
-                The AI verdict is a recommendation. Hover a card to preview its impact on the
-                schedule; your decision moves the task.
-              </p>
-            </div>
+          <div className="flex shrink-0 items-center justify-end border-b border-slate-200 px-4 py-3">
             <button
               onClick={() => setOpen(false)}
               aria-label="Close reviews"
@@ -95,11 +89,58 @@ export function ReviewsRail() {
   );
 }
 
+/**
+ * How the authorship score is being *used*, which is a different question
+ * from how high it is: strict mode blocks on a flagged report, lenient mode
+ * records it and lets the other sources rule. Nothing here may claim the
+ * score blocked anything when the verdict came back APPROVED. Harvested from
+ * the old (unreachable) VerdictPanel's `authorship()`.
+ */
+function authorshipRead(v: Verdict): { line: string; tone: 'ok' | 'warn' | 'bad' } {
+  const pct = Math.round(v.gptzero.ai_probability * 100);
+  if (!v.gptzero.flagged) {
+    return { line: `${pct}% AI probability — reads as first-hand`, tone: 'ok' };
+  }
+  // `bad` means the gate blocked this verdict; `warn` means the score was
+  // recorded but the other sources ruled. Offline there is no trace, so fall
+  // back to the status — approximate, but it still cannot claim a block
+  // underneath an approval.
+  const card = v.trace?.find((s) => s.node === 'gptzero_gate');
+  const gating = card ? card.signal === 'bad' : v.status !== 'APPROVED';
+  if (!gating) {
+    return {
+      line:
+        v.status === 'APPROVED'
+          ? `${pct}% AI-generated — advisory only, did not block approval`
+          : `${pct}% AI-generated — advisory only, not the deciding factor`,
+      tone: 'warn',
+    };
+  }
+  return { line: `${pct}% AI-generated — auto-approval blocked`, tone: 'bad' };
+}
+
+/** The evidence's read on the claim, media-aware. Harvested from the old
+ * VerdictPanel's `sourceReads()` visual-analysis row. */
+function evidenceRead(v: Verdict): { line: string; tone: 'ok' | 'warn' | 'bad' } {
+  const vc = Math.round(v.vision.confidence * 100);
+  if (v.vision.matches_claim === null) return { line: `Cannot establish · ${vc}%`, tone: 'warn' };
+  return v.vision.matches_claim
+    ? { line: `Consistent with claim · ${vc}%`, tone: 'ok' }
+    : { line: `Contradicts claim · ${vc}%`, tone: 'bad' };
+}
+
+const TONE_TEXT: Record<'ok' | 'warn' | 'bad', string> = {
+  ok: 'text-emerald-700',
+  warn: 'text-amber-700',
+  bad: 'text-red-700',
+};
+
 function ReviewCard({ item }: { item: QueueItem }) {
   const decide = useJenga((s) => s.decide);
   const setPreview = useJenga((s) => s.setPreviewReport);
   const isTarget = useJenga((s) => s.reviewTargetId === item.report.id);
   const ref = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
   const { report } = item;
 
   // A card that goes away under the pointer (decided, or its rail closed) never
@@ -120,8 +161,18 @@ function ReviewCard({ item }: { item: QueueItem }) {
   const [note, setNote] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
+  const [dialogContent, setDialogContent] = useState<'report' | 'photo' | null>(null);
+
+  useEffect(() => {
+    if (dialogContent) dialogRef.current?.showModal();
+    else dialogRef.current?.close();
+  }, [dialogContent]);
 
   const aiApproved = verdict?.status === 'APPROVED';
+  const isRefusal = verdict?.status === 'UNDER_REVIEW';
+  const isVideo = verdict?.vision.media_type === 'video';
+  const auth = verdict && authorshipRead(verdict);
+  const evidence = verdict && evidenceRead(verdict);
 
   async function act(decision: 'approve' | 'deny') {
     // Same rule the API enforces; checked here so the reason shows beside the box.
@@ -156,51 +207,77 @@ function ReviewCard({ item }: { item: QueueItem }) {
         {report.submitted_at && ` · ${new Date(report.submitted_at).toLocaleString()}`}
       </p>
 
-      <p className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap rounded bg-slate-50 p-2 text-[11px] leading-relaxed text-slate-600">
-        {report.report_text}
-      </p>
-
-      {verdict && (
-        <div className="mt-2 rounded border border-slate-200 p-2">
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] uppercase tracking-wide text-slate-400">AI recommendation</span>
-            <span className={`rounded border px-1.5 py-0.5 font-mono text-[9px] ${AI_CHIP[verdict.status]}`}>
-              {verdict.status.replace('_', ' ')}
-            </span>
-            <span className="font-mono text-[10px] text-slate-400">
-              {Math.round(verdict.confidence * 100)}%
-            </span>
-            {verdict.gptzero.flagged && (
-              <span className="rounded border border-red-300 px-1.5 py-0.5 font-mono text-[9px] text-red-600">
-                AI-written?
+      {/* Recommendation + attached documentation, one container. */}
+      <div className="mt-2 rounded border border-slate-200 p-2">
+        {verdict && auth && evidence && (
+          <>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] uppercase tracking-wide text-slate-400">AI recommendation</span>
+              <span className={`rounded border px-1.5 py-0.5 font-mono text-[9px] ${AI_CHIP[verdict.status]}`}>
+                {verdict.status.replace('_', ' ')}
               </span>
-            )}
+              <span className="font-mono text-[10px] text-slate-400">
+                {Math.round(verdict.confidence * 100)}%
+              </span>
+            </div>
+
+            <div className="mt-1.5 flex flex-col gap-0.5">
+              <p className={`text-[10px] font-medium ${TONE_TEXT[auth.tone]}`}>
+                Authorship: {auth.line}
+              </p>
+              <p className={`text-[10px] font-medium ${TONE_TEXT[evidence.tone]}`}>
+                {isVideo ? 'Video' : 'Photo'}: {evidence.line}
+              </p>
+            </div>
+
+            <div className="mt-2 rounded p-2">
+              {isRefusal && (
+                <div className="mb-1 flex items-center gap-1 text-[9px] uppercase tracking-wide text-amber-600">
+                  <AlertTriangle size={10} />
+                  Declined to rule
+                </div>
+              )}
+              <p className="text-[11px] leading-relaxed text-slate-600">{verdict.reasoning}</p>
+            </div>
+          </>
+        )}
+
+        <div className={verdict ? 'mt-3' : ''}>
+          <span className="text-[10px] uppercase tracking-wide text-slate-400">Attached documentation</span>
+          <div className="mt-1.5 flex flex-col gap-2">
+            {report.media_url &&
+              (isVideo ? (
+                <video
+                  src={mediaUrl(report.media_url)}
+                  controls
+                  className="h-40 w-full rounded border border-slate-200 bg-black object-contain"
+                />
+              ) : (
+                <img
+                  src={mediaUrl(report.media_url)}
+                  alt="Submitted evidence"
+                  onClick={() => setDialogContent('photo')}
+                  className="h-40 w-full cursor-zoom-in rounded border border-slate-200 object-cover"
+                />
+              ))}
+
+            {/* The attached report — open the original document, or the full text. */}
+            <button
+              onClick={() => setDialogContent('report')}
+              className="flex w-full items-center gap-1.5 rounded border border-slate-200 p-2 text-left text-[11px] text-slate-600 hover:bg-slate-50"
+            >
+              <FileText size={12} className="shrink-0 text-slate-400" />
+              <span className="truncate">{report.report_filename ?? 'Open report'}</span>
+            </button>
           </div>
-          <p className="mt-1.5 text-[11px] leading-relaxed text-slate-600">{verdict.reasoning}</p>
-          {verdict.actionable_request && (
-            <p className="mt-1 text-[11px] italic text-slate-500">{verdict.actionable_request}</p>
-          )}
-          {verdict.vision.observation && (
-            <p className="mt-1.5 text-[11px] leading-relaxed text-slate-600">
-              <span className="font-medium text-slate-700">
-                {verdict.vision.media_type === 'video' ? 'Video analysis: ' : 'Visual analysis: '}
-              </span>
-              {verdict.vision.observation}
-            </p>
-          )}
         </div>
-      )}
+      </div>
 
-      {report.media_url && (
-        <video
-          src={mediaUrl(report.media_url)}
-          controls
-          className="mt-2 max-h-48 w-full rounded border border-slate-200 bg-black"
-        />
-      )}
-
+      {/* 4 · If you deny — the cost of denying, before the owner decides. */}
       {item.impact && <DenialImpact impact={item.impact} />}
 
+      {/* 5 · Your decision */}
+      <p className="mt-3 text-[10px] uppercase tracking-wide text-slate-400">Your decision</p>
       <textarea
         value={note}
         onChange={(e) => setNote(e.target.value)}
@@ -210,7 +287,7 @@ function ReviewCard({ item }: { item: QueueItem }) {
             : 'Note (required: to deny, or to approve against the AI)'
         }
         rows={2}
-        className="mt-2 w-full resize-none rounded-md border border-slate-200 px-2 py-1.5 text-[11px] text-slate-700 placeholder:text-slate-300"
+        className="mt-1 w-full resize-none rounded-md border border-slate-200 px-2 py-1.5 text-[11px] text-slate-700 placeholder:text-slate-300"
       />
       {error && <p className="mt-1 text-[11px] text-red-600">{error}</p>}
       <div className="mt-2 flex gap-2">
@@ -229,6 +306,42 @@ function ReviewCard({ item }: { item: QueueItem }) {
           Deny
         </button>
       </div>
+
+      <dialog
+        ref={dialogRef}
+        onClose={() => setDialogContent(null)}
+        className="fixed top-1/2 left-1/2 m-0 w-[min(90vw,760px)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-slate-200 bg-white p-0 shadow-xl backdrop:bg-slate-900/50"
+      >
+        <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2">
+          <span className="truncate text-xs font-medium text-slate-700">
+            {dialogContent === 'photo' ? 'Submitted photo' : (report.report_filename ?? 'Report')}
+          </span>
+          <button
+            onClick={() => dialogRef.current?.close()}
+            aria-label="Close preview"
+            className="shrink-0 text-slate-400 hover:text-slate-700"
+          >
+            <X size={14} />
+          </button>
+        </div>
+        <div className="max-h-[80vh] overflow-auto p-3">
+          {dialogContent === 'photo' && report.media_url && (
+            <img src={mediaUrl(report.media_url)} alt="Submitted evidence" className="max-w-full rounded" />
+          )}
+          {dialogContent === 'report' &&
+            (report.report_url ? (
+              <iframe
+                src={mediaUrl(report.report_url)}
+                className="h-[70vh] w-[70vw] max-w-full rounded border border-slate-200"
+                title={report.report_filename ?? 'Report'}
+              />
+            ) : (
+              <pre className="whitespace-pre-wrap text-xs leading-relaxed text-slate-700">
+                {report.report_text}
+              </pre>
+            ))}
+        </div>
+      </dialog>
     </div>
   );
 }

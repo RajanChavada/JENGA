@@ -1,10 +1,16 @@
 """JENGA API. Route handler -> engine -> storage. Nothing in between."""
 
+import base64
 import json
+import mimetypes
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# .md has no stdlib mimetype entry; without this a Markdown report upload would
+# persist with a "bin" extension and lose its Content-Type on preview.
+mimetypes.add_type("text/markdown", ".md")
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -241,7 +247,13 @@ async def parse_document(file: UploadFile = File(...)):
     data = await file.read()
     if not data:
         raise HTTPException(400, "empty upload")
-    return documents.parse_document(file.filename or "upload", data)
+    parsed = documents.parse_document(file.filename or "upload", data)
+    # Keep the original bytes alongside the extracted text so the owner's
+    # review can preview the real document, not just what was pulled from it.
+    mime = mimetypes.guess_type(file.filename or "")[0] or file.content_type or "application/octet-stream"
+    media_id, _ = media_store.save(data, mime)
+    parsed["media_url"] = f"/api/media/{media_id}"
+    return parsed
 
 
 @app.post("/api/documents/extract-tasks", response_model=ExtractedTasks)
@@ -373,6 +385,19 @@ async def verify(task_id: str, body: VerifyRequest, strict: bool = True):
             request = f"{request.rstrip()} Blueprint coordinates X:{task['x']} Y:{task['y']}."
         verdict["actionable_request"] = request
 
+    # A submitted photo is a payload, not a reference — same rule as
+    # image_base64 never landing in the DB below. Persist the bytes once here
+    # so the owner's review has something to look at, and store only the URL.
+    media_url = body.media_url
+    if body.image_base64 and not media_url:
+        try:
+            media_id, _ = media_store.save(
+                base64.b64decode(body.image_base64), body.image_mime or "image/jpeg"
+            )
+            media_url = f"/api/media/{media_id}"
+        except Exception as exc:
+            print(f"[verify] failed to persist photo for {task_id} ({exc})")
+
     # The verdict is a recommendation. Only the owner's decision moves the task
     # to verified; a submission always lands awaiting review.
     await db.add_evidence(
@@ -382,7 +407,9 @@ async def verify(task_id: str, body: VerifyRequest, strict: bool = True):
             "report_text": body.report_text,
             "image_base64": body.image_base64,
             "transcript": body.transcript,
-            "media_url": body.media_url,
+            "media_url": media_url,
+            "report_url": body.report_url,
+            "report_filename": body.report_filename,
             "verdict": verdict,
             # What GPTZero said, recorded identically in both modes; only the
             # decision below follows the verdict. No reading at all is NULL, not

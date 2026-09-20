@@ -5,7 +5,6 @@ import dynamic from "next/dynamic";
 import { ArrowLeft, ArrowRight } from "lucide-react";
 import { WorkGraph } from "@/components/WorkGraph";
 import { Timeline } from "@/components/Timeline";
-import { VerdictPanel, AgentRunning } from "@/components/VerdictPanel";
 import { AttributionLedger } from "@/components/AttributionLedger";
 import { ReviewsButton, ReviewsRail } from "@/components/ApprovalQueue";
 import { ContractorPortal } from "@/components/ContractorPortal";
@@ -229,7 +228,6 @@ function SiteTab() {
             <StationView />
           </div>
         </div>
-        <VerifyRail />
       </div>
 
       <Splitter
@@ -245,26 +243,6 @@ function SiteTab() {
         <Timeline />
       </div>
     </div>
-  );
-}
-
-/**
- * The verify rail: the agent pipeline while a submission runs, then the verdict.
- * Collapses to zero width when idle so the blueprint and twin get the room.
- */
-function VerifyRail() {
-  const busy = useJenga((s) => s.busy);
-  const cascading = useJenga((s) => s.cascading);
-  const verdict = useJenga((s) => s.verdict);
-  const active = (busy && !cascading) || !!verdict;
-
-  if (!active) return null;
-
-  return (
-    <aside className="w-90 shrink-0 overflow-auto bg-slate-50 p-3">
-      <AgentRunning />
-      <VerdictPanel />
-    </aside>
   );
 }
 

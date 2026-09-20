@@ -183,6 +183,10 @@ class ParsedDocument(BaseModel):
     char_count: int
     text: str
     preview: str
+    #: Playback/preview URL for the uploaded file itself, alongside the
+    #: extracted `text`. A reference, not a payload — same convention as
+    #: Report.media_url.
+    media_url: str | None = None
 
 
 class ProposedTask(BaseModel):
@@ -237,6 +241,16 @@ class VerifyRequest(BaseModel):
     #: to the stored report so the owner's review can play it back.
     video_finding: dict | None = None
     media_url: str | None = None
+    #: MIME type of `image_base64`, so a persisted photo gets the right file
+    #: extension. Ignored when there is no image (or when `media_url` is
+    #: already set, i.e. a video was submitted).
+    image_mime: str | None = None
+    #: Playback URL for the contractor's uploaded report file (PDF/DOCX/TXT),
+    #: from a prior POST /api/documents/parse — carried through to the stored
+    #: Report so the owner can open the original document, not just its
+    #: extracted text.
+    report_url: str | None = None
+    report_filename: str | None = None
 
 
 class DisputeRequest(BaseModel):
@@ -307,9 +321,15 @@ class Report(BaseModel):
     task_id: str
     project_id: str
     report_text: str
-    #: Playback URL for an attached video, when one was submitted. A photo's
-    #: base64 payload never appears here — this is a reference, not a payload.
+    #: Playback URL for the attached evidence (video or photo), when one was
+    #: submitted. A reference, not a payload — the base64 image or raw video
+    #: bytes never appear here.
     media_url: str | None = None
+    #: Playback/preview URL for the contractor's uploaded report file
+    #: (PDF/DOCX/TXT), when the update was submitted as a document rather
+    #: than typed.
+    report_url: str | None = None
+    report_filename: str | None = None
     # The AI's recommendation. Withheld (None) from the contractor's view.
     verdict: dict | None = None
     owner_decision: OwnerDecision
